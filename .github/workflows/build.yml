@@ -5,14 +5,14 @@ on:
     branches:
       - '**'
     tags:
-      - 'v*'            # מפעיל את ה-Workflow גם כשדוחפים תגית (למשל v1.0.0)
+      - 'v*'            # מפעיל את ה-Workflow כשתדחוף תגית (למשל v1.0.0)
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # הרשאה נדרשת ליצירת Release ב-GitHub
+      contents: write   # הרשאה נדרשת ליצירת Release ב-GitHub והעלאת קבצים
 
     steps:
       - name: Check out repository
@@ -32,20 +32,21 @@ jobs:
       - name: Pack plugin
         run: node scripts/pack-plugin.js
 
-      - name: Upload Zip Artifact
+      - name: Upload Plugin Artifact
         uses: actions/upload-artifact@v4
         with:
           name: plugin-release
           path: |
-            *.zip
+            *.otzplugin
+            dist/*.otzplugin
             dist/
 
-      # הוספת השלב ליצירת מהדורה (Release) והעלאת ה-ZIP
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/') # יורץ רק כשמדובר בדחיפת Tag
+        if: startsWith(github.ref, 'refs/tags/') # יורץ רק כאשר מדובר בדחיפת Tag
         uses: softprops/action-gh-release@v2
         with:
           files: |
             *.otzplugin
+            dist/*.otzplugin
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
