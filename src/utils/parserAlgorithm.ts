@@ -1,6 +1,7 @@
 import { OtzariaLink, PluginConfig, DHHighlight, SessionState } from '../types';
 import { expandAbbreviationsInText, DEFAULT_ABBREVIATIONS, NORMALIZED_ABBREVIATIONS_MAP, ABBR_MARK } from '../data/abbreviations';
 import { HALACHA_COMMENTATORS } from '../data/halachaCommentators';
+import { parseSeifKatanCitation, seifKatanLine, simanNumber } from './seifKatan';
 
 /**
  * FIX ח׳ — a resolved abbreviation keeps ONE slot of the maxDhWords cap and bridges the run,
@@ -2679,7 +2680,11 @@ export function runLinkingParser(
       let targetSecondary: string | null = null;
       let explicitSecondaryTarget = false;
 
-      const namedSource = routableSources.find(source => startsWithSourceKeyword(lineForKeywordCheck, source.keywordsNorm));
+      // On the שו"ע a נושא כלים is cited by ס"ק number ("ש"ך ס"ק כ'"): that names the line itself.
+      const skCitation = profile.kind === 'halacha' ? parseSeifKatanCitation(trimmedLine, routableSources) : null;
+      const namedSource = skCitation
+        ? routableSources.find(source => source.id === skCitation.sourceId)
+        : routableSources.find(source => startsWithSourceKeyword(lineForKeywordCheck, source.keywordsNorm));
       if (namedSource) {
         targetSecondary = namedSource.id;
         explicitSecondaryTarget = true;
@@ -2743,7 +2748,7 @@ export function runLinkingParser(
       let isInherited = false;
 
       // Extract DH search text using stripped line if secondary prefix present
-      let lineForDh = stripSecondaryPrefixWith(trimmedLine, secondaryPrefixRe);
+      let lineForDh = skCitation ? skCitation.dh : stripSecondaryPrefixWith(trimmedLine, secondaryPrefixRe);
       if (DEBUG) console.log(`  🔍 lineForDh='${lineForDh}' (after stripSecondaryPrefix)`);
       // In הלכה a name like ט"ז or מ"ב may be a number of the שו"ע itself: when routing to the
       // נושא כלים finds nothing, the line is read exactly as it would be without that book.
@@ -2774,7 +2779,7 @@ export function runLinkingParser(
       const secondarySeg = targetSecondary ? secondarySegOf(targetSecondary) : null;
       let maxDhWordsForTarget = sources.find(source => source.id === targetSecondary)?.maxDhWords ?? profile.maxDhWords;
       let { dhText, cleanDh, isExplicitDelimiter } = extractDiburHamatchil(lineForDhExtraction, config.diburHamatchilDelimiter, maxDhWordsForTarget, profile);
-      if (routedToCommentatorOnly && !lineForDh.trim()) readAsUnrouted();
+      if (routedToCommentatorOnly && !lineForDh.trim() && !skCitation) readAsUnrouted();
       if (DEBUG) console.log(`  📌 dhText='${dhText}', cleanDh='${cleanDh}', isExplicitDelimiter=${isExplicitDelimiter}`);
 
       let matchedSourceLineNum: number | null = null;
@@ -2806,7 +2811,30 @@ export function runLinkingParser(
       // Search in secondary source if routed (unless it's 'בא"ד', in which case we don't search, we inherit)
       // In הלכה a נושא כלים is searched only inside the סימן cited, never across the whole book.
       const secondarySearchable = secondary && targetSecondary === secondary.source.id && (secondarySeg || !routedToCommentatorOnly);
-      if (!shouldInheritLine && secondarySearchable) {
+      const skSiman = skCitation ? skCitation.siman ?? simanNumber(segmentSimanTitle) : null;
+      const skLine = skCitation && secondary && skSiman
+        ? seifKatanLine(secondary.source.title, secondary.doc.lines, skSiman, skCitation.seifKatan)
+        : null;
+      // A ד"ה given with the ס"ק must be on that line or within two of it; otherwise the ס"ק stands, unconfirmed.
+      let seifKatanUnconfirmed = false;
+      if (!shouldInheritLine && skLine && secondary) {
+        matchedSecondaryLineNum = skLine;
+        if (skCitation!.dh) {
+          const searchNear = (from: number, to: number) => searchLineInDoc(
+            secondary.doc.lines, Math.max(1, from), Math.min(secondary.doc.lines.length, to), cleanDh, lineForDhExtraction,
+            isExplicitDelimiter, secondary.idf, null, false, secondary.cache, maxDhWordsForTarget, 0.65
+          );
+          const onLine = searchNear(skLine, skLine);
+          const found = onLine.lineNum ? onLine : searchNear(skLine - 2, skLine + 2);
+          if (found.lineNum) {
+            secMatchRes = found;
+            matchedSecondaryLineNum = found.lineNum;
+          } else {
+            seifKatanUnconfirmed = true;
+          }
+        }
+      }
+      if (!shouldInheritLine && secondarySearchable && !skLine && !(skCitation && !skCitation.dh)) {
         const { doc: secDoc, idf: secIdf, cache: secCache, source: secSource } = secondary;
         const secStart = secondarySeg ? secondarySeg.startLine : 1;
         const secEnd = secondarySeg ? secondarySeg.endLine : secDoc.lines.length;
@@ -3178,7 +3206,8 @@ export function runLinkingParser(
           ? (secMatchRes.lineNum ? secMatchRes : srcMatchRes)
           : (srcMatchRes.lineNum ? srcMatchRes : secMatchRes);
 
-        const confidence = calculateLinkConfidence({
+        const bySeifKatan = skLine !== null && matchedSecondaryLineNum !== null && !isInherited;
+        const confidence = bySeifKatan ? (seifKatanUnconfirmed ? 60 : 100) : calculateLinkConfidence({
           isInherited: Boolean(isInherited),
           inheritDepth: previousInheritDepth + 1,
           inheritedFrom: previousLink?.confidence,
