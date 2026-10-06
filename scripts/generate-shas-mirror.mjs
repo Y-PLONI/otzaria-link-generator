@@ -167,31 +167,29 @@ fs.mkdirSync(path.dirname(outFile), { recursive: true });
 fs.writeFileSync(outFile, output, 'utf8');
 
 // ── The Shulchan Arukh: נושא כלים line -> line of its part ──
+// An older extract without it keeps the committed table, like a missing extract does.
 const shasPairs = totalPairs;
 const halachaParts = readTypesArray('HALACHA_BOOKS');
-if (!index.halacha) {
-  console.error('shas-mirror: the extract has no Shulchan Arukh parts — re-run scripts/extract-shas-commentary-links.mjs');
-  process.exit(1);
-}
 const halachaTable = {};
-for (const entry of index.halacha) {
+for (const entry of index.halacha ?? []) {
   const data = JSON.parse(fs.readFileSync(path.join(inDir, entry.file), 'utf8'));
   halachaTable[entry.base] = Object.fromEntries(data.commentaries.map(c => [c.series, encodeCommentary(c)]));
 }
 const missingParts = halachaParts.filter(part => !halachaTable[part]);
 if (missingParts.length) {
-  console.error(`shas-mirror: Shulchan Arukh parts missing from the extract: ${missingParts.join(', ')}`);
-  process.exit(1);
-}
-const halachaBody = halachaParts
-  .map(part => {
-    const series = Object.entries(halachaTable[part])
-      .map(([key, encoded]) => `    ${key}: ${JSON.stringify(encoded)},`)
-      .join('\n');
-    return `  ${JSON.stringify(part)}: {\n${series}\n  },`;
-  })
-  .join('\n');
-const halachaOutput = `/**
+  const verb = fs.existsSync(halachaOutFile) ? 'keeping the committed table' : 'NO TABLE WILL EXIST';
+  console.warn(`shas-mirror: Shulchan Arukh parts missing from the extract (${missingParts.join(', ')}) — ${verb}.`);
+  console.warn('shas-mirror: regenerate it with `node --import tsx scripts/extract-shas-commentary-links.mjs`.');
+} else {
+  const halachaBody = halachaParts
+    .map(part => {
+      const series = Object.entries(halachaTable[part])
+        .map(([key, encoded]) => `    ${key}: ${JSON.stringify(encoded)},`)
+        .join('\n');
+      return `  ${JSON.stringify(part)}: {\n${series}\n  },`;
+    })
+    .join('\n');
+  const halachaOutput = `/**
  * GENERATED FILE — do not edit by hand.
  * Run \`node scripts/generate-shas-mirror.mjs\` (wired into \`npm run build\`).
  *
@@ -204,9 +202,10 @@ export const HALACHA_MIRROR_TABLE: Record<string, Record<string, string>> = {
 ${halachaBody}
 };
 `;
-fs.writeFileSync(halachaOutFile, halachaOutput, 'utf8');
-console.log(`shas-mirror: ${(totalPairs - shasPairs).toLocaleString('en-US')} Shulchan Arukh pairs, wrote ${(halachaOutput.length / 1024).toFixed(0)}KB to ${path.relative(projectRoot, halachaOutFile)}`);
+  fs.writeFileSync(halachaOutFile, halachaOutput, 'utf8');
+  console.log(`shas-mirror: ${(totalPairs - shasPairs).toLocaleString('en-US')} Shulchan Arukh pairs, wrote ${(halachaOutput.length / 1024).toFixed(0)}KB to ${path.relative(projectRoot, halachaOutFile)}`);
+}
 
-console.log(`shas-mirror: ${totalPairs.toLocaleString('en-US')} pairs, ${generated.length} tractates`);
-if (conflicts) console.log(`shas-mirror: ${conflicts} commentary lines had >1 gemara link (last wins)`);
+console.log(`shas-mirror: ${shasPairs.toLocaleString('en-US')} pairs, ${generated.length} tractates`);
+if (conflicts) console.log(`shas-mirror: ${conflicts} commentary lines had >1 base-text link (the last, i.e. the highest base line, wins)`);
 console.log(`shas-mirror: wrote ${(output.length / 1024).toFixed(0)}KB to ${path.relative(projectRoot, outFile)}`);

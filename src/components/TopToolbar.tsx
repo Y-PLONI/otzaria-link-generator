@@ -2,8 +2,8 @@ import React, { useState } from 'react';
 import { Save, FolderOpen, Download, ArrowLeftRight, RotateCcw, ListTree, Filter, Menu } from 'lucide-react';
 import JSZip from 'jszip';
 import { SessionState } from '../types';
-import { formatLineWithDH, parseDocumentSegments, normalizeText, findMatchingSegment, isLinkableContentLine, findFirstAlignedSegmentIndex, allSecondaryLines, secondarySourcesFor } from '../utils/parserAlgorithm';
-import { profileForConfig } from '../utils/halachaAlgorithm';
+import { formatLineWithDH, parseDocumentSegments, normalizeText, findMatchingSegment, isLinkableContentLine, findFirstAlignedSegmentIndex, allSecondaryLines, secondarySourcesFor, findSecondarySegment } from '../utils/parserAlgorithm';
+import { profileForConfig, containsSiman } from '../utils/halachaAlgorithm';
 import { buildLinkRecords, LinkRecord } from '../utils/exportLinks';
 import { isSefariaOwnedCommentary } from '../utils/sefariaRefs';
 import { getWordSimilarity } from '../utils/fuzzyUtils';
@@ -57,6 +57,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
       const commDoc = parseDocumentSegments(session.commentaryLines.join('\n'), exportProfile);
       const srcDoc = parseDocumentSegments(session.sourceLines.join('\n'), exportProfile);
       const secondaryDocs = allSecondaryLines(session).map(([id, lines]) => ({
+        id,
         label: secondarySourcesFor(session.config).find(source => source.id === id)?.label ?? id,
         lines,
         doc: parseDocumentSegments(lines.join('\n'), exportProfile)
@@ -188,14 +189,16 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
       // never searched by the parser, so it is not reported here as lines that failed to link.
       const firstAlignedSegIdx = findFirstAlignedSegmentIndex(commDoc.segments, [
         srcDoc.segments,
-        ...secondaryDocs.map(d => d.doc.segments)
+        ...secondaryDocs.filter(d => d.id === 'rashi' || d.id === 'tosafot').map(d => d.doc.segments)
       ]);
 
       if (unlinkedFolder) {
+        let simanTitle: string | undefined;
         commDoc.segments.forEach((commSeg, segIdx) => {
+          if (containsSiman(commSeg.headerTitle)) simanTitle = commSeg.headerTitle;
           if (firstAlignedSegIdx > 0 && segIdx < firstAlignedSegIdx) return;
           const srcSeg = findMatchingSegment(srcDoc.segments, commSeg.headerTitle);
-          const secondarySegs = secondaryDocs.map(d => ({ ...d, seg: findMatchingSegment(d.doc.segments, commSeg.headerTitle) }));
+          const secondarySegs = secondaryDocs.map(d => ({ ...d, seg: findSecondarySegment(d.doc.segments, commSeg.headerTitle, exportProfile, simanTitle) }));
           
           for (let i = commSeg.startLine; i <= commSeg.endLine; i++) {
             if (i > session.commentaryLines.length) break;

@@ -9,7 +9,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { runLinkingParser, secondarySourcesFor } from '../src/utils/parserAlgorithm';
+import { runLinkingParser, secondarySourcesFor, secondarySourcesCitedIn } from '../src/utils/parserAlgorithm';
 import { buildLinkRecords } from '../src/utils/exportLinks';
 import { mirrorBaseLine } from '../src/utils/shasMirror';
 import { HALACHA_COMMENTATORS } from '../src/data/halachaCommentators';
@@ -72,6 +72,26 @@ for (const part of HALACHA_BOOKS) {
   eq('without the books loaded nothing is routed to them', res.links.filter(l => l.secondaryTarget).length, 0);
   eq('without the books loaded there are no secondaryLines', res.secondaryLines, undefined);
   eq('ש"ס keeps exactly רש"י and תוספות', secondarySourcesFor({ sourceCategory: 'shas', targetBookName: 'ברכות' }).map(s => s.id), ['rashi', 'tosafot']);
+}
+
+// ── 2b. what QA found ────────────────────────────────────────────────────────────────────────
+{
+  const part = HALACHA_BOOKS[1];
+  const shach = HALACHA_COMMENTATORS[part].find(c => c.id === 'shach')!;
+  const shachText = ['<h1>x</h1>', '<h2>סימן א</h2>', '<h3>סעיף א</h3>', 'פתיחה כללית של הספר', '<h2>סימן ב</h2>', '<h3>סעיף א</h3>', 'שורה אחרת לגמרי כאן', '<h3>סעיף ב</h3>', `${PHRASES[0]} ועוד`].join('\n');
+  const sa2 = [SA_TEXT, '<h2>סימן ב</h2>', 'שורה שלישית בסימן השני כאן'].join('\n');
+  const comm = ['<h2>סימן ב</h2>', '<h3>סעיף ב</h3>', `ש"ך ד"ה ${PHRASES[0]}. ביאור`, 'ט"ז שורה שלישית בסימן השני כאן'].join('\n');
+  const res = runLinkingParser(comm, sa2, config(part), undefined, undefined, undefined, undefined, { shach: { text: shachText }, taz: { text: shachText } });
+  eq('a commentary סעיף header finds the ש"ך inside its own סימן', res.links.filter(l => l.line_index_1 === 3).map(l => [l.secondaryTarget, l.line_index_2]), [['shach', 9]]);
+  eq('ט"ז that the ט"ז does not have is read in the שו"ע', res.links.filter(l => l.line_index_1 === 4).map(l => [l.secondaryTarget ?? null, l.line_index_2]), [[null, 6]]);
+  eq('only the commentators the commentary names are loaded',
+    secondarySourcesCitedIn(['(א) ש"ך ד"ה משהו', 'שורה רגילה', 'גם כאן נאמר ט"ז'].join('\n'), config(part)).map(s => s.id), [shach.id]);
+
+  const oc = HALACHA_BOOKS[0];
+  const intro = ['<h1>x</h1>', '<h2>הקדמה</h2>', 'דברי פתיחה ארוכים של המחבר כאן', '<h2>סימן א</h2>', 'שורה'].join('\n');
+  const commIntro = ['<h2>הקדמה</h2>', 'דברי פתיחה ארוכים של המחבר כאן', '<h2>סימן א</h2>', 'שורה ראשונה של לשון השולחן ערוך'].join('\n');
+  const resIntro = runLinkingParser(commIntro, SA_TEXT, config(oc), undefined, undefined, undefined, undefined, { mishna_berura: { text: intro } });
+  eq('a נושא כלים with an introduction does not pull in the commentary front matter', resIntro.links.filter(l => l.line_index_1 < 3).length, 0);
 }
 
 // ── 3. against the library: tables, refs and the exported mirror row ─────────────────────────

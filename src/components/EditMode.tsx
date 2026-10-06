@@ -36,7 +36,7 @@ import {
   unmarkLineAsInherited
 } from '../utils/inheritanceChain';
 
-const getTargetColors = (target?: 'rashi' | 'tosafot' | 'primary' | string) => {
+const getTargetColors = (target?: string) => {
   switch (target) {
     case 'rashi':
       return {
@@ -81,7 +81,7 @@ const getTargetColors = (target?: 'rashi' | 'tosafot' | 'primary' | string) => {
  * EditMode without touching any of these props, and paying for the whole list again is
  * what made the drag overlay appear late.
  */
-const CollapsibleText = React.memo(({ text, isPrimary, links, targetType }: { text: string; isPrimary: boolean; links?: OtzariaLink[]; targetType?: 'rashi' | 'tosafot' | 'primary' | string }) => {
+const CollapsibleText = React.memo(({ text, isPrimary, links, targetType }: { text: string; isPrimary: boolean; links?: OtzariaLink[]; targetType?: string }) => {
   const [isExpanded, setIsExpanded] = useState(isPrimary);
 
   // Parse words and determine highlights if links are provided
@@ -600,8 +600,8 @@ export const EditMode: React.FC<EditModeProps> = ({
    * failed to find a source: they are shown plainly, with no warning and no unlinked count.
    */
   const linkingStartLine = useMemo(
-    () => findLinkingStartLine(commentaryLines, sourceLines, rashiLines, tosafotLines, chainProfile, otherSecondaries.map(o => o.lines)),
-    [commentaryLines, sourceLines, rashiLines, tosafotLines, chainProfile, otherSecondaries]
+    () => findLinkingStartLine(commentaryLines, sourceLines, rashiLines, tosafotLines, chainProfile),
+    [commentaryLines, sourceLines, rashiLines, tosafotLines, chainProfile]
   );
   const isFrontMatterLine = useCallback(
     (lineIdx1: number) => lineIdx1 < linkingStartLine,
@@ -797,7 +797,11 @@ export const EditMode: React.FC<EditModeProps> = ({
       const isSecondary = Boolean(secondaryTarget);
 
       const source = secondarySourcesFor(config).find(s => s.id === secondaryTarget);
-      if (isSecondary && !source) return currentLinks;
+      // The ids offered here all come from secondarySourcesFor; this guards a stale session only.
+      if (isSecondary && !source) {
+        console.warn(`Unknown secondary source '${secondaryTarget}' — link left unchanged`);
+        return currentLinks;
+      }
 
       const path_2 = isSecondary
         ? `${source!.title}.txt`

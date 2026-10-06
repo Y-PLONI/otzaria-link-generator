@@ -894,6 +894,29 @@ export function secondarySourcesFor(config: Pick<PluginConfig, 'sourceCategory' 
   return sources;
 }
 
+/**
+ * The secondary sources a commentary names near the start of some line — the only ones worth
+ * loading. A superset of what the engine routes, from a cheap look at each line's first words.
+ */
+export function secondarySourcesCitedIn(
+  commentaryText: string,
+  config: Pick<PluginConfig, 'sourceCategory' | 'targetBookName'>
+): SecondarySource[] {
+  const sources = secondarySourcesFor(config);
+  const cited = new Set<SecondarySource>();
+  for (const line of commentaryText.split('\n')) {
+    if (cited.size === sources.length) break;
+    const words = normalizeText(line.slice(0, 200)).split(' ');
+    for (let i = 0; i < Math.min(3, words.length); i++) {
+      const rest = words.slice(i).join(' ');
+      for (const source of sources) {
+        if (!cited.has(source) && startsWithSourceKeyword(rest, source.keywordsNorm)) cited.add(source);
+      }
+    }
+  }
+  return sources.filter(source => cited.has(source));
+}
+
 /** The lines of secondary source `id` in a session or a parse result. */
 export function secondaryLinesOf(
   holder: { rashiLines?: string[]; tosafotLines?: string[]; secondaryLines?: Record<string, string[]> },
@@ -1126,24 +1149,45 @@ export function findMatchingSegment(
   commHeaderTitle: string
 ): HeaderSegment | undefined {
   if (!segments || segments.length === 0) return undefined;
+  // Normalized once per document: the engine asks per segment, per pass and per secondary book.
+  let index = segmentIndexCache.get(segments);
+  if (!index) {
+    const norms = segments.map(s => normalizeHeaderForComparison(s.headerTitle));
+    const exact = new Map<string, HeaderSegment>();
+    norms.forEach((n, i) => { if (!exact.has(n)) exact.set(n, segments[i]); });
+    index = { norms, exact, results: new Map() };
+    segmentIndexCache.set(segments, index);
+  }
+  if (index.results.has(commHeaderTitle)) return index.results.get(commHeaderTitle);
   const norm = normalizeHeaderForComparison(commHeaderTitle);
-  return (
-    segments.find(s => normalizeHeaderForComparison(s.headerTitle) === norm) ??
-    segments.find(s => areHeadersMatching(commHeaderTitle, s.headerTitle))
-  );
+  const { norms } = index;
+  const found = index.exact.get(norm) ?? (norm
+    ? segments.find((_, i) => norms[i] && (norms[i] === norm || containsWholeWords(norm, norms[i]) || containsWholeWords(norms[i], norm)))
+    : undefined);
+  index.results.set(commHeaderTitle, found);
+  return found;
 }
 
+const segmentIndexCache = new WeakMap<HeaderSegment[], {
+  norms: string[];
+  exact: Map<string, HeaderSegment>;
+  results: Map<string, HeaderSegment | undefined>;
+}>();
+
 /**
- * The segment of a secondary book that a commentary segment cites. In הלכה a נושא כלים may divide a
- * סימן by סעיף headers (ש"ך), so the סימן runs on through them to the next סימן.
+ * The segment of a secondary book that a commentary segment cites. In הלכה it is looked up by the
+ * commentary's סימן (`simanTitle`, the enclosing one when the segment is a סעיף), and runs on
+ * through the book's own סעיף headers (ש"ך) to the next סימן.
  */
-function findSecondarySegment(
+export function findSecondarySegment(
   segments: HeaderSegment[],
   commHeaderTitle: string,
-  profile: SourceProfile
+  profile: SourceProfile,
+  simanTitle?: string
 ): HeaderSegment | null {
-  const seg = findMatchingSegment(segments, commHeaderTitle);
-  if (!seg || profile.kind !== 'halacha') return seg || null;
+  const isHalacha = profile.kind === 'halacha';
+  const seg = findMatchingSegment(segments, isHalacha && simanTitle ? simanTitle : commHeaderTitle);
+  if (!seg || !isHalacha) return seg || null;
   let last = segments.indexOf(seg);
   while (last + 1 < segments.length && !containsSiman(segments[last + 1].headerTitle)) last++;
   return { ...seg, endLine: segments[last].endLine };
@@ -1185,8 +1229,7 @@ export function findLinkingStartLine(
   sourceLines: string[],
   rashiLines?: string[],
   tosafotLines?: string[],
-  profile?: SourceProfile,
-  otherSecondaryLines: string[][] = []
+  profile?: SourceProfile
 ): number {
   if (!commentaryLines || commentaryLines.length === 0) return 1;
 
@@ -1197,8 +1240,7 @@ export function findLinkingStartLine(
   const firstAligned = findFirstAlignedSegmentIndex(commSegments, [
     segmentsOf(sourceLines),
     segmentsOf(rashiLines),
-    segmentsOf(tosafotLines),
-    ...otherSecondaryLines.map(segmentsOf)
+    segmentsOf(tosafotLines)
   ]);
   if (firstAligned <= 0) return 1;
 
@@ -2358,7 +2400,7 @@ export function runLinkingParser(
     // המספור נחתך לפני הספירה בדיוק כפי שהוא נחתך לפני חילוץ הד"ה, אחרת "פותח את השורה"
     // היה נמדד על אסימון המספור עצמו במקום על המילה הראשונה של הציטוט.
     const t = stripHalachaLeadIn(raw, profile).trim();
-    const stripped = stripSecondaryPrefixWith(t, secondaryPrefixRe);
+    const stripped = stripSecondaryPrefix(t);
     const first = normalizeText(stripped.trim() ? stripped : t).split(/\s+/).filter(Boolean)[0];
     if (first) swdhOpeningCount.set(first, (swdhOpeningCount.get(first) || 0) + 1);
   }
@@ -2382,7 +2424,8 @@ export function runLinkingParser(
   // inheritance chain (see findFirstAlignedSegmentIndex for why, and what -1 means).
   const firstAlignedSegIdx = findFirstAlignedSegmentIndex(commDoc.segments, [
     srcDoc.segments,
-    ...[...secondaryDocs.values()].map(d => d.doc.segments)
+    secondaryDocs.get('rashi')?.doc.segments ?? null,
+    secondaryDocs.get('tosafot')?.doc.segments ?? null
   ]);
   if (DEBUG && firstAlignedSegIdx > 0) {
     console.log(`  ⏭️  Skipping ${firstAlignedSegIdx} front-matter segment(s) before the first matching header '${commDoc.segments[firstAlignedSegIdx].headerTitle}'`);
@@ -2446,7 +2489,9 @@ export function runLinkingParser(
     console.log(`\n🔁 מעבר ${passIdx + 1}/${passes.length}: '${spec.name}' (רף ${spec.minScore ?? '—'}, ${spec.fuzzy ? 'גמיש' : 'מילולי'}, היקף ${spec.scope}) — ${anchorByLine.size} עוגנים, ${windowByLine.size} חלונות`);
   }
 
+  let simanTitle: string | undefined;
   commDoc.segments.forEach((commSeg, segIdx) => {
+    if (containsSiman(commSeg.headerTitle)) simanTitle = commSeg.headerTitle;
     if (firstAlignedSegIdx > 0 && segIdx < firstAlignedSegIdx) return;
 
     // בהלכה "השורה הראשונה אומרת שהיא המשך" נמדד לפי המספור: סגמנט שנפתח בשורה לא ממוספרת
@@ -2477,8 +2522,16 @@ export function runLinkingParser(
 
     // Find matching source segment
     const srcSeg = findMatchingSegment(srcDoc.segments, commSeg.headerTitle);
+    // Looked up only when a line of this segment is routed to that book.
     const secondarySegs = new Map<string, HeaderSegment | null>();
-    secondaryDocs.forEach((d, id) => secondarySegs.set(id, findSecondarySegment(d.doc.segments, commSeg.headerTitle, profile)));
+    const segmentSimanTitle = simanTitle;
+    const secondarySegOf = (id: string) => {
+      if (!secondarySegs.has(id)) {
+        const d = secondaryDocs.get(id);
+        secondarySegs.set(id, d ? findSecondarySegment(d.doc.segments, commSeg.headerTitle, profile, segmentSimanTitle) : null);
+      }
+      return secondarySegs.get(id)!;
+    };
 
     let lastMatchedSrcLineIndex = srcSeg ? srcSeg.startLine : 1;
 
@@ -2693,10 +2746,22 @@ export function runLinkingParser(
       let isInherited = false;
 
       // Extract DH search text using stripped line if secondary prefix present
-      const lineForDh = stripSecondaryPrefixWith(trimmedLine, secondaryPrefixRe);
+      let lineForDh = stripSecondaryPrefixWith(trimmedLine, secondaryPrefixRe);
       if (DEBUG) console.log(`  🔍 lineForDh='${lineForDh}' (after stripSecondaryPrefix)`);
+      // In הלכה a name like ט"ז or מ"ב may be a number of the שו"ע itself: when routing to the
+      // נושא כלים finds nothing, the line is read exactly as it would be without that book.
+      const routedToCommentatorOnly = profile.kind === 'halacha' && targetSecondary !== null;
+      const readAsUnrouted = () => {
+        targetSecondary = null;
+        explicitSecondaryTarget = false;
+        explicitPrimaryTarget = startsWithSourceKeyword(cleanedPrefix, GEMARA_KEYWORDS_NORM) || startsWithSourceKeyword(cleanedPrefix, MISHNA_KEYWORDS_NORM);
+        lineForDh = stripSecondaryPrefix(trimmedLine);
+        lineForDhExtraction = lineForDh.trim() ? lineForDh : trimmedLine;
+        maxDhWordsForTarget = profile.maxDhWords;
+        ({ dhText, cleanDh, isExplicitDelimiter } = extractDiburHamatchil(lineForDhExtraction, config.diburHamatchilDelimiter, maxDhWordsForTarget, profile));
+      };
       // For secondary target explicit lines, if stripSecondaryPrefix returns empty, skip this line
-      if (explicitSecondaryTarget && !lineForDh.trim()) {
+      if (explicitSecondaryTarget && !lineForDh.trim() && !routedToCommentatorOnly) {
         if (DEBUG) console.log(`  ⏭️  SKIP: explicit secondary but no DH text`);
         // Note: skipped BEFORE the link / no-link decision below, so such a line neither takes a
         // link nor severs the inheritance chain. `isBareSourceLabelLine` is the same test in
@@ -2704,14 +2769,15 @@ export function runLinkingParser(
         continue; // No DH text after removing secondary prefix - skip this commentary line
       }
       // For non-explicit lines, use lineForDh or fallback to trimmedLine
-      const lineForDhExtraction = lineForDh.trim() ? lineForDh : trimmedLine;
+      let lineForDhExtraction = lineForDh.trim() ? lineForDh : trimmedLine;
       if (DEBUG) console.log(`  🔎 lineForDhExtraction='${lineForDhExtraction}'`);
       // Tosafot ד"ה is capped to 7 words; every other source (Rashi, Gemara, Mishna, etc.) keeps
       // the profile's cap — 12 for ש"ס/תנ"ך as before, 5 for ספרי הלכה.
       const secondary = targetSecondary ? secondaryDocs.get(targetSecondary) : undefined;
-      const secondarySeg = targetSecondary ? secondarySegs.get(targetSecondary) ?? null : null;
-      const maxDhWordsForTarget = sources.find(source => source.id === targetSecondary)?.maxDhWords ?? profile.maxDhWords;
-      const { dhText, cleanDh, isExplicitDelimiter } = extractDiburHamatchil(lineForDhExtraction, config.diburHamatchilDelimiter, maxDhWordsForTarget, profile);
+      const secondarySeg = targetSecondary ? secondarySegOf(targetSecondary) : null;
+      let maxDhWordsForTarget = sources.find(source => source.id === targetSecondary)?.maxDhWords ?? profile.maxDhWords;
+      let { dhText, cleanDh, isExplicitDelimiter } = extractDiburHamatchil(lineForDhExtraction, config.diburHamatchilDelimiter, maxDhWordsForTarget, profile);
+      if (routedToCommentatorOnly && !lineForDh.trim()) readAsUnrouted();
       if (DEBUG) console.log(`  📌 dhText='${dhText}', cleanDh='${cleanDh}', isExplicitDelimiter=${isExplicitDelimiter}`);
 
       let matchedSourceLineNum: number | null = null;
@@ -2741,7 +2807,9 @@ export function runLinkingParser(
         (/(?:^|\s)ו?כו'(?:\s|$|[.,:;])/i.test(lineForDhExtraction) || /(?:^|\s)ו?כו'(?:\s|$|[.,:;])/i.test(trimmedLine));
 
       // Search in secondary source if routed (unless it's 'בא"ד', in which case we don't search, we inherit)
-      if (!shouldInheritLine && secondary) {
+      // In הלכה a נושא כלים is searched only inside the סימן cited, never across the whole book.
+      const secondarySearchable = secondary && targetSecondary === secondary.source.id && (secondarySeg || !routedToCommentatorOnly);
+      if (!shouldInheritLine && secondarySearchable) {
         const { doc: secDoc, idf: secIdf, cache: secCache, source: secSource } = secondary;
         const secStart = secondarySeg ? secondarySeg.startLine : 1;
         const secEnd = secondarySeg ? secondarySeg.endLine : secDoc.lines.length;
@@ -2808,6 +2876,8 @@ export function runLinkingParser(
           }
         }
       }
+
+      if (routedToCommentatorOnly && !matchedSecondaryLineNum) readAsUnrouted();
 
       // Search in primary source segment unless the line explicitly targets a secondary source or is 'בא"ד' (which means inherit previous).
       if (!explicitSecondaryTarget && !shouldInheritLine && !skipForWindowWidth && activePass.mode === 'score') {
@@ -3065,7 +3135,7 @@ export function runLinkingParser(
         }
         
         const headerTitle = isSecondaryLink
-          ? secondarySegs.get(targetSecondary!)?.headerTitle || config.targetBookName
+          ? secondarySegOf(targetSecondary!)?.headerTitle || config.targetBookName
           : srcSeg ? srcSeg.headerTitle : config.targetBookName;
 
         // A line that took its target wholesale from the previous link points at a line in

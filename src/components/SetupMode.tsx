@@ -3,7 +3,7 @@ import { BookNode, PluginConfig, TANAKH_BOOKS, SHAS_TRACTATES, HALACHA_BOOKS } f
 import { MOCK_LIBRARY_TREE } from '../data/otzariaLibraryMock';
 import { fetchLibraryTree, fetchBookContent, fetchBookLinks, notifyError, notifySuccess, saveToCache, getFromCache, removeFromCache } from '../utils/otzariaBridge';
 import { loadGsDictionary } from '../utils/gsDictionary';
-import { secondarySourcesFor } from '../utils/parserAlgorithm';
+import { secondarySourcesCitedIn } from '../utils/parserAlgorithm';
 import { AbbreviationsModal } from './AbbreviationsModal';
 import { ToggleSwitch } from './ToggleSwitch';
 import {
@@ -390,7 +390,8 @@ export const SetupMode: React.FC<SetupModeProps> = ({ onRunAlgorithm }) => {
           tosafotText = undefined;
         }
       } else {
-        for (const source of secondarySourcesFor({ sourceCategory: category, targetBookName: targetBook })) {
+        // רק נושאי כלים שהפירוש מזכיר בשמם: כל ספר כזה הוא מיליוני תווים
+        for (const source of secondarySourcesCitedIn(commentaryContent, { sourceCategory: category, targetBookName: targetBook })) {
           try {
             const result = await tryFetchSecondarySource([source.title]);
             if (result.text) secondaries[source.id] = result;

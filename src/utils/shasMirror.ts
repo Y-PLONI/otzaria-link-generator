@@ -24,9 +24,6 @@ import { HALACHA_MIRROR_TABLE } from '../data/halachaMirrorTable';
  * keyed by HALACHA_BOOKS and the SecondarySource ids.
  */
 
-/** A SecondarySource id: 'rashi', 'tosafot', or a נושא כלים id. */
-export type MirrorSeries = string;
-
 /** Decoded tables, per `${tractate}/${series}`. Decoding is ~10k slots and runs at most once. */
 const decoded = new Map<string, Map<number, number> | null>();
 
@@ -49,7 +46,7 @@ function decode(encoded: string): Map<number, number> {
   return map;
 }
 
-function tableFor(base: string, series: MirrorSeries): Map<number, number> | null {
+function tableFor(base: string, series: string): Map<number, number> | null {
   const cacheKey = `${base}/${series}`;
   const cached = decoded.get(cacheKey);
   if (cached !== undefined) return cached;
@@ -74,7 +71,7 @@ export function hasMirrorData(base: string): boolean {
  */
 export function mirrorBaseLine(
   base: string,
-  series: MirrorSeries,
+  series: string,
   commentaryLine: number
 ): number | undefined {
   if (!commentaryLine || commentaryLine < 1) return undefined;

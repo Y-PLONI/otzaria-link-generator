@@ -29,7 +29,7 @@ const shach = (part: string): HalachaCommentator => ({
 /** חלק השו"ע (כמו ב-HALACHA_BOOKS) -> נושאי הכלים שלו */
 export const HALACHA_COMMENTATORS: Record<string, HalachaCommentator[]> = {
   'שולחן ערוך, אורח חיים': [
-    { id: 'magen_avraham', label: 'מגן אברהם', title: 'מגן אברהם', keywords: withPrefix('מג"א', 'מגן אברהם') },
+    { id: 'magen_avraham', label: 'מגן אברהם', title: 'מגן אברהם', keywords: withPrefix('מג"א', 'מ"א', 'מגן אברהם') },
     taz('אורח חיים'),
     baerHeitev('באר היטב אורח חיים'),
     // בלי השם המלא: "משנה" שבראש השורה נחתכת כמילת הקשר (SOURCE_CONTEXT_STRIP_RE)
