@@ -6,9 +6,8 @@
  * the fixed parser and once against a copy with the fix reverted — and diffs the two
  * dumps. This file itself just emits a deterministic dump on stdout.
  *
- * The exported payload is defined by TopToolbar.handleExportZip: line_index_1,
- * line_index_2, heRef_2, path_2, connection_type (identical set for _links.json and
- * _links.csv).
+ * The exported payload is built by TopToolbar.handleExportZip from each link's line_index_1,
+ * line_index_2, heRef_2 and path_2 (ref_2 and a Sefaria target's heRef_2 are derived from them).
  */
 
 import { runLinkingParser } from '../src/utils/parserAlgorithm';

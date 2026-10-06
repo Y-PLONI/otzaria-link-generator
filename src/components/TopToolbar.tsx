@@ -2,9 +2,10 @@ import React, { useState } from 'react';
 import { Save, FolderOpen, Download, ArrowLeftRight, RotateCcw, ListTree, Filter, Menu } from 'lucide-react';
 import JSZip from 'jszip';
 import { SessionState, OtzariaLink } from '../types';
-import { formatLineWithDH, parseDocumentSegments, normalizeText, findMatchingSegment, isLinkableContentLine, findFirstAlignedSegmentIndex, HeaderSegment } from '../utils/parserAlgorithm';
+import { formatLineWithDH, parseDocumentSegments, normalizeText, findMatchingSegment, isLinkableContentLine, findFirstAlignedSegmentIndex } from '../utils/parserAlgorithm';
 import { profileForConfig } from '../utils/halachaAlgorithm';
 import { mirrorGemaraLine, hasMirrorData } from '../utils/shasMirror';
+import { sefariaRefFor, isSefariaOwnedTarget, isSefariaOwnedCommentary, titleOfPath } from '../utils/sefariaRefs';
 import { getWordSimilarity } from '../utils/fuzzyUtils';
 import { calculateDocumentIdfWeights, getCombinedWordWeight } from '../utils/wordWeights';
 import { notifySuccess, notifyError } from '../utils/otzariaBridge';
@@ -56,9 +57,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
 
       const cleanFileName = safeFileName(session.commentaryTitle);
 
-      // The engine's own segmentation of every document, parsed once here because both the
-      // link files below and the unlinked-lines report at the end need it: heRef strings are
-      // `ספר - כותרת הקטע`, so building one costs a segment lookup. parseDocumentSegments is
+      // The engine's own segmentation, for the unlinked-lines report below. parseDocumentSegments is
       // pure and idempotent on already-parsed session lines.
       const exportProfile = profileForConfig(session.config);
       const commDoc = parseDocumentSegments(session.commentaryLines.join('\n'), exportProfile);
@@ -66,127 +65,62 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
       const rashiDoc = session.rashiLines ? parseDocumentSegments(session.rashiLines.join('\n'), exportProfile) : null;
       const tosafotDoc = session.tosafotLines ? parseDocumentSegments(session.tosafotLines.join('\n'), exportProfile) : null;
 
-      // 1. Generate _links.json
-      const exportedLinks: any[] = [];
-      session.links.forEach(link => {
-        exportedLinks.push({
-          line_index_1: link.line_index_1,
-          line_index_2: link.line_index_2,
-          heRef_2: link.heRef_2,
-          path_2: link.path_2,
-          connection_type: link.connection_type
-        });
-      });
-
-      const linksJsonContent = JSON.stringify(exportedLinks, null, 2);
-      zip.file(`${cleanFileName}_links.json`, linksJsonContent);
-
-      // ── Additional link files ────────────────────────────────────────────────────────────
-      // All of them carry the exact schema of _links.json above — five fields, nothing more —
-      // so anything that already consumes that file consumes these unchanged.
-
-      /** line number -> header title of the segment holding it, for building heRef_2 */
-      const headerTitlesByLine = (segments: HeaderSegment[], lineCount: number): string[] => {
-        const titles = new Array<string>(lineCount + 1).fill('');
-        segments.forEach(segment => {
-          // headerLineIndex is 0 for a document with no headers at all, whose single segment
-          // starts at line 1; the header line itself belongs to its own segment.
-          const from = Math.max(1, segment.headerLineIndex || segment.startLine);
-          for (let line = from; line <= Math.min(segment.endLine, lineCount); line++) {
-            titles[line] = segment.headerTitle;
-          }
-        });
-        return titles;
+      // 1. Generate _links.json — the file otzaria-library imports, named after the book that owns
+      // line_index_1. "source" declares the target as this commentary's base; the library stores it
+      // as base → commentary, so no reverse files are needed. A Sefaria-owned target must carry
+      // ref_2 (src/utils/sefariaRefs.ts), any other target must not.
+      let missingRefs = 0;
+      const linkRecord = (lineIndex1: number, lineIndex2: number, heRef2: string, path2: string, targetLines?: string[]) => {
+        const title = titleOfPath(path2);
+        if (!isSefariaOwnedTarget(title)) {
+          return { line_index_1: lineIndex1, line_index_2: lineIndex2, heRef_2: heRef2, path_2: path2, 'Conection Type': 'source' };
+        }
+        const sefaria = sefariaRefFor(title, lineIndex2, targetLines);
+        if (!sefaria) {
+          missingRefs++;
+          return null;
+        }
+        return {
+          line_index_1: lineIndex1,
+          line_index_2: lineIndex2,
+          heRef_2: sefaria.heRef,
+          ref_2: sefaria.ref,
+          path_2: path2,
+          'Conection Type': 'source'
+        };
       };
 
-      const commentaryHeaders = headerTitlesByLine(commDoc.segments, session.commentaryLines.length);
-      const sourceHeaders = headerTitlesByLine(srcDoc.segments, session.sourceLines.length);
+      const targetLinesOf = (link: OtzariaLink) =>
+        link.secondaryTarget === 'rashi' ? session.rashiLines
+          : link.secondaryTarget === 'tosafot' ? session.tosafotLines
+            : session.sourceLines;
 
-      /** `ספר - כותרת`, the shape parserAlgorithm builds heRef_2 in */
-      const refFor = (bookName: string, headerTitle: string) =>
-        headerTitle ? `${bookName} - ${headerTitle}` : bookName;
+      // Mirror row — a commentary line that links to רש"י/תוספות also hangs off the gemara line
+      // that comment is on. The engine never computes it; it is Otzaria's own library link, baked
+      // into src/data/shasMirrorTable.ts. For a secondary link line_index_2 is a line in רש"י/תוספות,
+      // which is exactly what the table is keyed by.
+      const tractate = session.config.targetBookName;
+      const withMirror = session.config.sourceCategory === 'shas' && hasMirrorData(tractate);
+      const mirrorRecord = (link: OtzariaLink) => {
+        const series = link.secondaryTarget;
+        if (!withMirror || (series !== 'rashi' && series !== 'tosafot')) return null;
+        // Coverage is whatever the library's own links cover — a miss is a row to skip.
+        const gemaraLine = mirrorGemaraLine(tractate, series, link.line_index_2);
+        return gemaraLine ? linkRecord(link.line_index_1, gemaraLine, tractate, `${tractate}.txt`, session.sourceLines) : null;
+      };
 
-      const linkRecord = (lineIndex1: number, lineIndex2: number, heRef2: string, path2: string) => ({
-        line_index_1: lineIndex1,
-        line_index_2: lineIndex2,
-        heRef_2: heRef2,
-        path_2: path2,
-        connection_type: 'commentary'
-      });
+      const exportedLinks = session.links
+        .flatMap(link => [
+          linkRecord(link.line_index_1, link.line_index_2, link.heRef_2, link.path_2, targetLinesOf(link)),
+          mirrorRecord(link)
+        ])
+        .filter(record => record !== null);
 
-      // Reverse files — every link read from the target's side. Once flipped, the commentary
-      // IS the target, so path_2/heRef_2 name it: `<שם הפירוש>.txt` follows the same
-      // `${bookName}.txt` convention the parser uses, and commentaryFileName is built that way.
-      const reverseOf = (link: OtzariaLink) => linkRecord(
-        link.line_index_2,
-        link.line_index_1,
-        refFor(session.commentaryTitle, commentaryHeaders[link.line_index_1] || ''),
-        session.commentaryFileName
-      );
+      // The library rejects a BOM, CR, and more than one trailing LF.
+      zip.file(`${cleanFileName}_links.json`, JSON.stringify(exportedLinks, null, 2) + '\n');
 
-      // A links file is named after the book that owns line_index_1 — which is why the file
-      // built above is named after the commentary. Flipped, line_index_1 belongs to the book
-      // that WAS the target, so each reverse file carries that book's name: ברכות_links.json,
-      // רשי על ברכות_links.json, תוספות על ברכות_links.json. The secondary titles are derived
-      // the same way the parser derives path_2 for a secondary link (`רש"י על <ספר>`).
-      const targetBookName = session.config.targetBookName;
-      const reverseGroups: { bookName: string; links: OtzariaLink[] }[] = [
-        {
-          bookName: targetBookName,
-          links: session.links.filter(l => !l.secondaryTarget)
-        },
-        {
-          bookName: `רש"י על ${targetBookName}`,
-          links: session.links.filter(l => l.secondaryTarget === 'rashi')
-        },
-        {
-          bookName: `תוספות על ${targetBookName}`,
-          links: session.links.filter(l => l.secondaryTarget === 'tosafot')
-        }
-      ];
-
-      reverseGroups.forEach(group => {
-        // A category with no secondary sources at all (הלכה, תנ"ך) would otherwise get empty
-        // files named after books that do not exist.
-        if (group.links.length === 0) return;
-        zip.file(
-          `${safeFileName(group.bookName)}_links.json`,
-          JSON.stringify(group.links.map(reverseOf), null, 2)
-        );
-      });
-
-      // Mirror file — a commentary line that links to רש"י/תוספות also hangs off a line of the
-      // daf itself, and that second link is what this file carries. The engine never computes
-      // it and the editor never shows it: it is Otzaria's own library link, baked into
-      // src/data/shasMirrorTable.ts (see src/utils/shasMirror.ts). For a secondary link
-      // line_index_2 is a line in רש"י/תוספות, which is exactly what the table is keyed by.
-      //
-      // Its line_index_1 is a commentary line, like the main file's, so it cannot be named
-      // after the owning book without colliding — hence the `_גמרא` qualifier.
-      const tractate = targetBookName;
-      if (session.config.sourceCategory === 'shas' && hasMirrorData(tractate)) {
-        const mirrorLinks = session.links.flatMap(link => {
-          const series = link.secondaryTarget;
-          if (series !== 'rashi' && series !== 'tosafot') return [];
-          const gemaraLine = mirrorGemaraLine(tractate, series, link.line_index_2);
-          // Coverage is whatever the library's own links cover — a miss is a line to skip,
-          // not a failure.
-          if (!gemaraLine) return [];
-          return [linkRecord(
-            link.line_index_1,
-            gemaraLine,
-            refFor(tractate, sourceHeaders[gemaraLine] || ''),
-            `${tractate}.txt`
-          )];
-        });
-
-        if (mirrorLinks.length > 0) {
-          zip.file(`${cleanFileName}_גמרא_links.json`, JSON.stringify(mirrorLinks, null, 2));
-        }
-      }
-
-      // 2. Generate _links.csv without dhText/confidence/status
-      const csvHeaders = ['line_index_1', 'line_index_2', 'heRef_2', 'path_2', 'connection_type'];
+      // 2. Generate _links.csv — the same rows, for reading in a spreadsheet
+      const csvHeaders = ['line_index_1', 'line_index_2', 'heRef_2', 'ref_2', 'path_2', 'Conection Type'];
       const escapeCsv = (val: any) => {
         if (val === undefined || val === null) return '""';
         const str = String(val);
@@ -196,13 +130,9 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
         return `"${str}"`;
       };
 
-      const csvRows = session.links.map(link => [
-        escapeCsv(link.line_index_1),
-        escapeCsv(link.line_index_2),
-        escapeCsv(link.heRef_2),
-        escapeCsv(link.path_2),
-        escapeCsv(link.connection_type || 'commentary')
-      ].join(','));
+      const csvRows = exportedLinks.map(record => csvHeaders
+        .map(header => escapeCsv((record as Record<string, unknown>)[header]))
+        .join(','));
 
       const csvContent = '\uFEFF' + [csvHeaders.join(','), ...csvRows].join('\r\n');
       zip.file(`${cleanFileName}_links.csv`, csvContent);
@@ -364,6 +294,12 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
+      if (missingRefs > 0) {
+        notifyError(`${missingRefs} קישורים לא יוצאו: לא נמצאה להם הפניית ספריא (ref_2), כנראה שגרסת ספר היעד שונה מזו שהתוסף מכיר`);
+      }
+      if (isSefariaOwnedCommentary(session.commentaryTitle)) {
+        notifyError(`שימו לב: "${session.commentaryTitle}" קיים בספריא, וקישורים ממנו דורשים ref_1 שהתוסף אינו מייצא — הקובץ עלול להידחות בסנכרון של הספרייה`);
+      }
       notifySuccess('קובץ ZIP (כולל TXT, JSON ו-CSV) ייוצא בהצלחה!');
     } catch (e) {
       console.error(e);

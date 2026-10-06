@@ -32,6 +32,10 @@ qa/data/
 # so a build does not need this directory.
 data/shas-commentary-links/
 
+# Sefaria snapshots read by scripts/generate-sefaria-refs.mjs (see its header for the source).
+# The generated src/data/sefariaRefTable.ts is committed.
+data/sefaria/
+
 # Scratch probes / one-off diagnostics
 src/utils/_*_probe.ts
 qa/*-probe.ts
