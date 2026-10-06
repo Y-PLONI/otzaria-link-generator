@@ -22,6 +22,7 @@ import {
 } from '../src/utils/sefariaRefs';
 import type { BakedBook } from '../src/utils/sefariaRefs';
 import { SEFARIA_REF_TABLE } from '../src/data/sefariaRefTable';
+import { TANAKH_BOOKS } from '../src/types';
 
 let failures = 0;
 const ascii = (s: unknown) => String(JSON.stringify(s) ?? 'undefined').replace(/[^ -~]/g, c => '\\u' + `${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
@@ -50,6 +51,8 @@ eq('gemara: no text, no ref', sefariaRefFor(BERAKHOT, 3), undefined);
 const tanakhText = [`<h1>${GENESIS}</h1>`, '<h2>פרק א</h2>', 'x', 'x', '<h2>פרק ב</h2>', 'x'];
 eq('tanakh: chapter and verse', sefariaRefFor(GENESIS, 4, tanakhText)?.ref, 'Genesis 1:2');
 eq('tanakh: next chapter', sefariaRefFor(GENESIS, 6, tanakhText)?.ref, 'Genesis 2:1');
+const ESTHER = 'אסתר';
+eq('tanakh: a book of Ketuvim is a selectable target with a derived ref', [TANAKH_BOOKS.includes(ESTHER), sefariaRefFor(ESTHER, 4, tanakhText)?.ref], [true, 'Esther 1:2']);
 
 // A synthetic baked book: segments [h1], [daf 2a + 2 lines], [daf 2b + 2 lines].
 const bakedText = ['<h1>T</h1>', '<h2>\u05d3\u05e3 \u05d1.</h2>', '\u05d0\u05d1', '\u05d2\u05d3\u05d4', '<h2>\u05d3\u05e3 \u05d1:</h2>', '\u05d5', '\u05d6\u05d7'];
