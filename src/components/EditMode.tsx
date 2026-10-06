@@ -31,8 +31,10 @@ import { useDragRelink } from '../hooks/useDragRelink';
 import { buildDragCandidates, parseDropId } from '../utils/dragCandidates';
 import {
   RENDER_WINDOW_SIZE,
+  RENDER_WINDOW_STEP,
   clampWindowStart,
   shiftWindowStart,
+  windowStartAround,
   windowStartToReveal
 } from '../utils/renderWindow';
 import { normalizeForSearch } from '../utils/searchNormalize';
@@ -253,6 +255,9 @@ const sameSvgLines = (a: SvgLine[], b: SvgLine[]) =>
     return line.id === other.id && line.x1 === other.x1 && line.y1 === other.y1
       && line.x2 === other.x2 && line.y2 === other.y2 && line.color === other.color;
   });
+
+/** How far off screen a window edge starts moving the window. */
+const WINDOW_SENTINEL_MARGIN = 1000;
 
 /** First position in a sorted array whose value is >= `value`. */
 const lowerBound = (sorted: number[], value: number) => {
@@ -680,9 +685,9 @@ export const EditMode: React.FC<EditModeProps> = ({
   }, [commentaryLines, chainProfile]);
 
   const filteredDrawerSegments = useMemo(() => {
-    if (!drawerSearchQuery.trim()) return commentarySegments;
     const q = drawerSearchQuery.toLowerCase().trim();
     const normalizedQ = normalizeForSearch(drawerSearchQuery).trim();
+    if (!normalizedQ) return commentarySegments;
     return commentarySegments.filter(seg =>
       normalizeForSearch(seg.headerTitle).includes(normalizedQ) ||
       `שורות ${seg.startLine}-${seg.endLine}`.includes(q)
@@ -708,7 +713,8 @@ export const EditMode: React.FC<EditModeProps> = ({
   };
 
   // Normalized once per document, and only while a search is active.
-  const isSourceSearchActive = sourceSearchQuery.trim() !== '';
+  const normalizedSourceQuery = normalizeForSearch(sourceSearchQuery).trim();
+  const isSourceSearchActive = normalizedSourceQuery !== '';
   const searchableLines = useMemo(() => {
     if (!isSourceSearchActive) return null;
     const normalize = (lines?: string[]) => (lines ?? []).map(normalizeForSearch);
@@ -731,7 +737,7 @@ export const EditMode: React.FC<EditModeProps> = ({
   const sortedCommentaryIndices = useMemo(() => {
     const indices: number[] = [];
     const q = sourceSearchQuery.toLowerCase().trim();
-    const normalizedQ = normalizeForSearch(sourceSearchQuery).trim();
+    const normalizedQ = normalizedSourceQuery;
 
     commentaryLines.forEach((line, idx) => {
       const commLineIdx1 = idx + 1;
@@ -744,7 +750,7 @@ export const EditMode: React.FC<EditModeProps> = ({
 
       const link = linkByLine.get(commLineIdx1);
 
-      if (q && searchableLines) {
+      if (searchableLines) {
         let lineMatches = searchableLines.commentary[idx].includes(normalizedQ) || commLineIdx1.toString() === q;
         let targetMatches = false;
         if (link) {
@@ -856,53 +862,137 @@ export const EditMode: React.FC<EditModeProps> = ({
    * Render window: only a slice of the groups is mounted, and it moves as the user scrolls
    * ------------------------------------------------------------------ */
 
-  const [requestedWindowStart, setWindowStart] = useState(0);
-  const windowStart = clampWindowStart(requestedWindowStart, groupedCommentary.length);
-  const windowEnd = Math.min(groupedCommentary.length, windowStart + RENDER_WINDOW_SIZE);
+  // Pinned to the first line of its first group, so regrouping above the window does not slide it.
+  const [windowState, setWindowState] = useState<{ index: number; line?: number }>({ index: 0 });
+  const pinnedStart = windowState.line !== undefined ? groupIndexByLine.get(windowState.line) : undefined;
+  /** Measured from the mounted groups; the spacers stand in for the rest at this height. */
+  const [avgGroupHeight, setAvgGroupHeight] = useState(160);
+  const [viewportHeight, setViewportHeight] = useState(() => (typeof window === 'undefined' ? 800 : window.innerHeight));
+  // Taller than the screen plus both sentinel margins and a step, or a move would bounce straight back.
+  const windowSize = Math.max(
+    RENDER_WINDOW_SIZE,
+    Math.ceil((viewportHeight + 2 * WINDOW_SENTINEL_MARGIN) / avgGroupHeight) + 2 * RENDER_WINDOW_STEP
+  );
+  const windowStart = clampWindowStart(pinnedStart ?? windowState.index, groupedCommentary.length, windowSize);
+  const windowEnd = Math.min(groupedCommentary.length, windowStart + windowSize);
+  const topSpacerRef = useRef<HTMLDivElement>(null);
+  const bottomSpacerRef = useRef<HTMLDivElement>(null);
   const topSentinelRef = useRef<HTMLDivElement>(null);
   const bottomSentinelRef = useRef<HTMLDivElement>(null);
-  const scrollAnchorRef = useRef<{ groupIdx: number; top: number } | null>(null);
+  /** The row at the top of the screen, kept there across every change of the window. */
+  const viewAnchorRef = useRef<{ line: number; top: number; edge?: 'start' | 'end' } | null>(null);
+  /** A jump into a spacer is waiting for its render; nothing else may move the window meanwhile. */
+  const jumpingRef = useRef(false);
   /** The window jumped to serve a pending reveal, so the reveal scrolls instantly. */
   const revealJumpedRef = useRef(false);
 
-  const findGroupElement = (groupIdx: number) =>
-    containerRef.current?.querySelector<HTMLElement>(`[data-group-idx="${groupIdx}"]`) ?? null;
+  const setWindowStart = useCallback((index: number) => {
+    setWindowState({ index, line: groupedCommentary[index]?.commIndices[0] });
+  }, [groupedCommentary]);
 
-  const shiftWindow = useCallback((direction: 1 | -1) => {
-    const next = shiftWindowStart(windowStart, direction, groupedCommentary.length);
-    if (next === windowStart || !containerRef.current) return;
-    // Pin the first group on screen, so mounting or dropping groups above it does not move the view.
-    scrollAnchorRef.current = null;
-    for (const element of containerRef.current.querySelectorAll<HTMLElement>('[data-group-idx]')) {
-      const rect = element.getBoundingClientRect();
+  const recordViewAnchor = useCallback(() => {
+    viewAnchorRef.current = null;
+    const container = containerRef.current;
+    if (!container) return;
+    for (const row of container.querySelectorAll<HTMLElement>('[data-group-idx] [id^="comm-box-"]')) {
+      const rect = row.getBoundingClientRect();
       if (rect.bottom > 0) {
-        scrollAnchorRef.current = { groupIdx: Number(element.dataset.groupIdx), top: rect.top };
-        break;
+        viewAnchorRef.current = { line: Number(row.id.slice('comm-box-'.length)), top: rect.top };
+        return;
       }
     }
+  }, []);
+
+  const shiftWindow = useCallback((direction: 1 | -1) => {
+    const next = shiftWindowStart(windowStart, direction, groupedCommentary.length, windowSize);
+    if (next === windowStart) return;
+    recordViewAnchor();
     setWindowStart(next);
-  }, [windowStart, groupedCommentary.length]);
+  }, [windowStart, windowSize, groupedCommentary.length, recordViewAnchor, setWindowStart]);
 
   useLayoutEffect(() => {
-    const anchor = scrollAnchorRef.current;
-    scrollAnchorRef.current = null;
-    if (!anchor) return;
-    const element = findGroupElement(anchor.groupIdx);
-    if (!element) return;
-    const delta = element.getBoundingClientRect().top - anchor.top;
-    if (delta !== 0) window.scrollBy(0, delta);
-  }, [windowStart]);
+    const container = containerRef.current;
+    const anchor = viewAnchorRef.current;
+    jumpingRef.current = false;
+    if (!container) return;
+    if (anchor?.edge) {
+      window.scrollTo(0, anchor.edge === 'end' ? document.documentElement.scrollHeight : 0);
+    } else if (anchor) {
+      const row = container.querySelector(`[data-group-idx] [id="comm-box-${anchor.line}"]`);
+      const delta = row ? row.getBoundingClientRect().top - anchor.top : 0;
+      if (Math.abs(delta) >= 0.5) window.scrollBy(0, delta);
+    }
+
+    const groups = container.querySelectorAll('[data-group-idx]');
+    if (groups.length >= 10) {
+      const measured = (groups[groups.length - 1].getBoundingClientRect().bottom
+        - groups[0].getBoundingClientRect().top) / groups.length;
+      if (Math.abs(measured - avgGroupHeight) > avgGroupHeight * 0.05) setAvgGroupHeight(measured);
+    }
+    recordViewAnchor();
+  }, [windowStart, groupedCommentary, avgGroupHeight, recordViewAnchor]);
 
   // Re-created on every move, so a sentinel still in range after one step triggers the next.
   useEffect(() => {
-    const observer = new IntersectionObserver(entries => {
-      const hit = entries.find(entry => entry.isIntersecting);
-      if (hit) shiftWindow(hit.target === topSentinelRef.current ? -1 : 1);
-    }, { rootMargin: '1000px 0px' });
+    const margin = WINDOW_SENTINEL_MARGIN;
+    const inRange = (element: HTMLElement | null) => {
+      if (!element) return false;
+      const rect = element.getBoundingClientRect();
+      return rect.bottom >= -margin && rect.top <= window.innerHeight + margin;
+    };
+    const observer = new IntersectionObserver(() => {
+      if (jumpingRef.current) return;
+      const up = inRange(topSentinelRef.current);
+      const down = inRange(bottomSentinelRef.current);
+      // Both in range: the window is shorter than the screen, and moving it would only bounce back.
+      if (up !== down) shiftWindow(up ? -1 : 1);
+    }, { rootMargin: `${margin}px 0px` });
     if (topSentinelRef.current) observer.observe(topSentinelRef.current);
     if (bottomSentinelRef.current) observer.observe(bottomSentinelRef.current);
     return () => observer.disconnect();
   }, [shiftWindow]);
+
+  // A scroll that lands inside a spacer (Home/End, dragging the scrollbar) jumps the window to
+  // the group estimated to be there, placed where its estimate was.
+  useEffect(() => {
+    const onScroll = () => {
+      if (jumpingRef.current) return;
+      const total = groupedCommentary.length;
+      let target: { index: number; top: number; edge?: 'start' | 'end' } | null = null;
+      const topRect = topSpacerRef.current?.getBoundingClientRect();
+      const bottomRect = bottomSpacerRef.current?.getBoundingClientRect();
+      if (topRect && topRect.bottom > window.innerHeight) {
+        const index = Math.max(0, Math.min(windowStart - 1, Math.floor(-topRect.top / avgGroupHeight)));
+        target = { index, top: topRect.top + index * avgGroupHeight, edge: window.scrollY <= 0 ? 'start' : undefined };
+      } else if (bottomRect && bottomRect.top < 0) {
+        const offset = Math.floor(-bottomRect.top / avgGroupHeight);
+        const index = windowEnd + Math.max(0, Math.min(total - windowEnd - 1, offset));
+        const atEnd = window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 1;
+        target = { index, top: bottomRect.top + (index - windowEnd) * avgGroupHeight, edge: atEnd ? 'end' : undefined };
+      }
+      if (!target) {
+        recordViewAnchor();
+        return;
+      }
+      jumpingRef.current = true;
+      viewAnchorRef.current = {
+        line: groupedCommentary[target.index].commIndices[0],
+        top: target.top,
+        edge: target.edge
+      };
+      setWindowStart(windowStartAround(target.index, total, windowSize));
+    };
+    const onResize = () => {
+      recordViewAnchor();
+      setViewportHeight(window.innerHeight);
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onResize);
+    };
+  }, [groupedCommentary, windowStart, windowEnd, windowSize, avgGroupHeight, recordViewAnchor, setWindowStart]);
 
   useEffect(() => {
     const t = setTimeout(updateSvgLines, 100);
@@ -1298,7 +1388,7 @@ export const EditMode: React.FC<EditModeProps> = ({
       ? groupIndexByLine.get(pendingReveal.lineIdx1)
       : pendingReveal.groupIdx;
     if (groupIdx !== undefined) {
-      const nextStart = windowStartToReveal(groupIdx, windowStart, groupedCommentary.length);
+      const nextStart = windowStartToReveal(groupIdx, windowStart, groupedCommentary.length, windowSize);
       if (nextStart !== windowStart) {
         revealJumpedRef.current = true;
         setWindowStart(nextStart);
@@ -1329,7 +1419,7 @@ export const EditMode: React.FC<EditModeProps> = ({
     highlightTimerRef.current = window.setTimeout(() => {
       element.classList.remove(...highlight);
     }, 1500);
-  }, [pendingReveal, findCommentaryRow, groupIndexByLine, windowStart, groupedCommentary.length]);
+  }, [pendingReveal, findCommentaryRow, groupIndexByLine, windowStart, windowSize, groupedCommentary.length]);
 
   useEffect(() => () => window.clearTimeout(highlightTimerRef.current), []);
 
@@ -1607,7 +1697,7 @@ export const EditMode: React.FC<EditModeProps> = ({
   return (
     <div className="space-y-3 pb-24 text-right" dir="rtl">
       {/* Main Unified List */}
-      <div className="space-y-2 relative" ref={containerRef}>
+      <div className="space-y-2 relative [overflow-anchor:none]" ref={containerRef}>
         <svg className="absolute inset-0 pointer-events-none z-10" style={{ width: '100%', height: '100%' }}>
           {svgLines.map(line => {
             const offset = Math.abs(line.x1 - line.x2) / 2;
@@ -1631,7 +1721,12 @@ export const EditMode: React.FC<EditModeProps> = ({
           </div>
         ) : (
           <>
-          {windowStart > 0 && <div ref={topSentinelRef} aria-hidden="true" />}
+          {windowStart > 0 && (
+            <>
+              <div ref={topSpacerRef} style={{ height: windowStart * avgGroupHeight }} aria-hidden="true" />
+              <div ref={topSentinelRef} aria-hidden="true" />
+            </>
+          )}
           {groupedCommentary.slice(windowStart, windowEnd).map((group, offset) => {
             const gIdx = windowStart + offset;
             const firstLinkObj = group.links[0];
@@ -1720,7 +1815,16 @@ export const EditMode: React.FC<EditModeProps> = ({
               </React.Fragment>
             );
           })}
-          {windowEnd < groupedCommentary.length && <div ref={bottomSentinelRef} aria-hidden="true" />}
+          {windowEnd < groupedCommentary.length && (
+            <>
+              <div ref={bottomSentinelRef} aria-hidden="true" />
+              <div
+                ref={bottomSpacerRef}
+                style={{ height: (groupedCommentary.length - windowEnd) * avgGroupHeight }}
+                aria-hidden="true"
+              />
+            </>
+          )}
           </>
         )}
 

@@ -161,12 +161,17 @@ export const EditLinkModal: React.FC<EditLinkModalProps> = ({
   };
 
   const currentTabLines = getTabLines();
-  const normalizedTabLines = useMemo(() => currentTabLines.map(normalizeForSearch), [currentTabLines]);
+  // A query that normalizes to nothing (only nikud, say) filters nothing, like an empty one.
+  const normalizedQuery = normalizeForSearch(searchQuery).trim();
+  const isSearchActive = normalizedQuery !== '';
+  const normalizedTabLines = useMemo(
+    () => (isSearchActive ? currentTabLines.map(normalizeForSearch) : null),
+    [currentTabLines, isSearchActive]
+  );
 
   // Filter lines by selected segment & search query
   const filteredLines = useMemo(() => {
     const seg = selectedSegIndex !== 'all' ? currentTabSegments[selectedSegIndex] : null;
-    const normalizedQuery = normalizeForSearch(searchQuery).trim();
 
     return currentTabLines
       .map((text, idx) => ({ text, lineIdx1: idx + 1 }))
@@ -174,11 +179,11 @@ export const EditLinkModal: React.FC<EditLinkModalProps> = ({
         if (seg && (item.lineIdx1 < seg.startLine || item.lineIdx1 > seg.endLine)) {
           return false;
         }
-        if (!searchQuery.trim()) return true;
+        if (!normalizedTabLines) return true;
         if (item.lineIdx1.toString() === searchQuery.toLowerCase().trim()) return true;
         return normalizedTabLines[item.lineIdx1 - 1].includes(normalizedQuery);
       });
-  }, [currentTabLines, normalizedTabLines, selectedSegIndex, currentTabSegments, searchQuery]);
+  }, [currentTabLines, normalizedTabLines, normalizedQuery, selectedSegIndex, currentTabSegments, searchQuery]);
 
   // Bring the selected line into view instead of making the user hunt for it down the list.
   // `nearest` keeps a card that is already visible exactly where it is, so plain clicking
