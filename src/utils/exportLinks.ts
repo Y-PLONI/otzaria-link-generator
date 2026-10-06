@@ -13,14 +13,8 @@ export interface LinkRecord {
   'Conection Type': 'source';
 }
 
-/**
- * The records of the `_links.json` file otzaria-library imports, named after the book that owns
- * line_index_1. "source" declares the target as this commentary's base; the library stores it as
- * base → commentary, so no reverse files are needed. A Sefaria-owned target must carry ref_2
- * (src/utils/sefariaRefs.ts), any other target must not; a link to a Sefaria-owned line with no
- * ref_2 is left out and counted in `misses` by its reason (any mirror row under `mirror`).
- * Duplicate records are dropped.
- */
+/** Records of `<commentary>_links.json`, deduplicated; a Sefaria-owned target without ref_2 is left
+ *  out and counted in `misses` by reason. Format: docs/DOUBLE_LINKS_AND_REVERSE_EXPORT.md §9. */
 export function buildLinkRecords(
   session: Pick<SessionState, 'links' | 'config' | 'sourceLines' | 'rashiLines' | 'tosafotLines' | 'secondaryLines'>
 ): { records: LinkRecord[]; misses: { header: number; changed: number; unaddressed: number; mirror: number } } {
@@ -48,10 +42,8 @@ export function buildLinkRecords(
   const targetLinesOf = (link: OtzariaLink) =>
     link.secondaryTarget ? secondaryLinesOf(session, link.secondaryTarget) : session.sourceLines;
 
-  // Mirror row — a commentary line that links to a secondary book (רש"י/תוספות, a נושא כלים) also
-  // hangs off the base line that comment is on. The engine never computes it; it is Otzaria's own
-  // library link, baked into src/data/shasMirrorTable.ts / halachaMirrorTable.ts. For a secondary
-  // link line_index_2 is a line in the secondary book, which is exactly what the tables are keyed by.
+  // Mirror row: a link to a secondary book also gets the base line that comment is on, from the
+  // library's own links baked into the mirror tables (keyed by the secondary line).
   const base = session.config.targetBookName;
   const withMirror = hasMirrorData(base);
   const mirrorRecord = (link: OtzariaLink) => {

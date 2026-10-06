@@ -1174,11 +1174,8 @@ const segmentIndexCache = new WeakMap<HeaderSegment[], {
   results: Map<string, HeaderSegment | undefined>;
 }>();
 
-/**
- * The segment of a secondary book that a commentary segment cites. In הלכה it is looked up by the
- * commentary's סימן (`simanTitle`, the enclosing one when the segment is a סעיף), and runs on
- * through the book's own סעיף headers (ש"ך) to the next סימן.
- */
+/** The secondary segment a commentary segment cites; in הלכה looked up by its סימן (`simanTitle`)
+ *  and running through the book's own סעיף headers (ש"ך) to the next סימן. */
 export function findSecondarySegment(
   segments: HeaderSegment[],
   commHeaderTitle: string,

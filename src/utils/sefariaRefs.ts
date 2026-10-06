@@ -1,22 +1,8 @@
 import { SEFARIA_REF_TABLE, SEFARIA_COMMENTARY_BASES, SEFARIA_COMMENTATORS } from '../data/sefariaRefTable';
 import { isHeaderLine, extractHeaderTitle } from './parserAlgorithm';
 
-/**
- * ── ref_2: the stable Sefaria reference of a link's target line ──────────────────────────
- *
- * otzaria-library's weekly sync resolves every link whose target is a Sefaria-owned book by
- * its English Sefaria ref (`Berakhot 2a:1`, `Rashi on Berakhot 2a:1:1`), not by the line
- * number, and rejects a record to such a book that carries none. A record to any other book
- * must carry none.
- *
- * Base texts are derived from the text itself: a daf/chapter header and the line's offset
- * under it is the whole address, on every line of the library's Bavli and Tanakh.
- * Commentaries are not — the second number of `Rashi on Berakhot 2a:3:1` is the gemara
- * segment the comment belongs to, which the Rashi text does not state — so their addresses
- * are read from the library's own heRef column into src/data/sefariaRefTable.ts by
- * scripts/generate-sefaria-refs.mjs. The table is anchored per segment (a header and the lines
- * under it) by a checksum of the text, so a later edit of the library drops only what it changed.
- */
+// ref_2 of a link target: base texts are derived from their own text, commentaries come from a
+// baked table anchored per segment. Rationale and encoding: docs/DOUBLE_LINKS_AND_REVERSE_EXPORT.md, section 9.
 
 /** Library title of a Bavli tractate -> its Sefaria title. */
 export const GEMARA_EN: Record<string, string> = {

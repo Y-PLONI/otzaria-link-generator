@@ -64,11 +64,8 @@ export function hasMirrorData(base: string): boolean {
   return Boolean(entry && Object.values(entry).some(Boolean));
 }
 
-/**
- * The base line (gemara / שו"ע) a secondary line comments on, or undefined when the library
- * states no link for it. Callers should treat undefined as "no mirror row to emit", not as an
- * error: coverage is whatever Otzaria's own links cover.
- */
+/** The base line (gemara / שו"ע) a secondary line comments on; undefined means the library
+ *  states no link for it — no mirror row, not an error. */
 export function mirrorBaseLine(
   base: string,
   series: string,

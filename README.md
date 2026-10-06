@@ -45,3 +45,9 @@
 2. הרצת שרת הפיתוח:
    `npm run dev`
 
+### טבלאות נתונים אפויות
+
+`src/data/shasMirrorTable.ts` ו-`halachaMirrorTable.ts` (קישור כפול מרש"י/תוספות/נושאי כלים לשורת הבסיס) נוצרות ב-`scripts/generate-shas-mirror.mjs`, ו-`src/data/sefariaRefTable.ts` (ה-ref_2 של מפרשים ושולחן ערוך) נוצרת ב-`scripts/generate-sefaria-refs.mjs`.
+הטבלאות שמורות בריפו, ו-`npm run build` אינו תלוי בקלטים שלהן: כשהם חסרים הסקריפטים מדלגים ומשאירים את הטבלאות השמורות.
+חידושן דורש מסד ספרייה מקומי (`OTZARIA_DB`), Node 22 עם `node:sqlite`, ולהפניות ספריא גם את ה-snapshots ב-`data/sefaria/` ו-Python עם `zstandard` להרצת `scripts/extract-sefaria-signatures.py`.
+פרטים בכותרות הסקריפטים וב-[docs/DOUBLE_LINKS_AND_REVERSE_EXPORT.md](docs/DOUBLE_LINKS_AND_REVERSE_EXPORT.md) (סעיף 9.1).

@@ -257,6 +257,31 @@ dist/com.otzaria.links-generator.otzplugin  1422KB   ← index.html + manifest �
 
 הבדיקה: [`qa/sefaria-refs.test.ts`](../qa/sefaria-refs.test.ts) — השוואה לקבצי קישורים אמיתיים של הספרייה, מעבר על כל שורות היעדים במסד המקומי, ובדיקת צורה מול רשימת התחיליות של ספריא.
 
+### 9.1 גזירת ref_2 והטבלה האפויה
+
+- גמרא ותנ"ך: הכתובת נגזרת מהטקסט עצמו — כותרת הדף/הפרק ומספר השורה מתחתיה הם כל הכתובת, בכל שורות הבבלי והתנ"ך שבספרייה.
+- מפרשים ושולחן ערוך: לא ניתנים לגזירה (המספר האמצעי ב-`Rashi on Berakhot 2a:3:1` הוא שורת הגמרא שהפירוש עליה), ולכן נקראים מעמודת heRef של המסד לתוך `src/data/sefariaRefTable.ts`.
+- קלטי `scripts/generate-sefaria-refs.mjs` (אף אחד מהם אינו בריפו; כשחסר אחד — הטבלה השמורה נשארת והסקריפט יוצא בהצלחה):
+  - מסד הספרייה (`OTZARIA_DB` דורס את המיקום הרגיל);
+  - `data/sefaria/sefaria_he_titles.txt` ו-`data/sefaria/sefaria_ref_prefixes.tsv`, עותקים של ה-snapshots ש-otzaria-library בודקת מולם:
+    `gh api repos/Otzaria/otzaria-library/contents/.github/data/<name> -H "Accept: application/vnd.github.raw"`;
+  - `data/sefaria/line-signatures.json`, מ-`python scripts/extract-sefaria-signatures.py` (דורש את החבילה `zstandard` — טקסט השורות במסד דחוס ב-zstd, ש-Node אינו קורא). לכל שורה: כותרת כ-`<level>:<title>`, אחרת — מספר האותיות העבריות בה.
+
+קידוד הטבלה: לכל ספר מחרוזת אסימונים שעוברת על שורותיו משורה 1, מחולקת לקטעים: שורה 1 וכל שורת כותרת פותחות קטע, שמסומן `|hhh` — ה-checksum של הטקסט שלו (`segmentHash`). כתובת היא רשימת מספרים (דף נשמר כעמוד: 2a = 3, 2b = 4), וכל אסימון יחסי לקודמו:
+
+```
+.n      n lines with no address (n in base36, default 1)
++n      n lines, each the previous address with its last number + 1
+^…^d:v  one line: the number k places above the last (k = count of ^) grows by d,
+        the numbers below it become v… and then 1
+A…Z     shorthand for ^1 … ^26
+=a:b:c  one line, the full address
+#i      the following lines belong to node i of the book (a book with sub-books)
+|hhh    a new segment, with the checksum of its text
+```
+
+בזמן ריצה הקטעים של הטקסט שנטען מותאמים לקטעי הטבלה לפי הסדר, מספר השורות וה-checksum; קפיצה קדימה מחייבת התאמה גם של הקטע הבא.
+
 ## 10. נושאי הכלים של השו"ע (אישוז #9)
 
 אותו מנגנון חל עכשיו גם בקטגוריית הלכה. "מקור משני" הוא מושג כללי (`SecondarySource` ב-`parserAlgorithm.ts`:

@@ -1,12 +1,5 @@
-"""Writes data/sefaria/line-signatures.json, the line shapes scripts/generate-sefaria-refs.mjs
-anchors the baked ref table to (see src/utils/sefariaRefs.ts, lineSignature).
-
-    python scripts/extract-sefaria-signatures.py
-
-Per book: one entry per line — a header line as "<level>:<title>", any other line as the count
-of Hebrew letters in it. Line text is zstd-compressed in the library database, which Node cannot
-read, hence Python. Needs the `zstandard` package; OTZARIA_DB overrides the database location.
-"""
+"""Writes data/sefaria/line-signatures.json for scripts/generate-sefaria-refs.mjs (needs `zstandard`).
+Format and purpose: docs/DOUBLE_LINKS_AND_REVERSE_EXPORT.md, section 9.1."""
 import json
 import os
 import re

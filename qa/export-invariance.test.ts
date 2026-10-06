@@ -6,12 +6,12 @@
  * the fixed parser and once against a copy with the fix reverted — and diffs the two
  * dumps. This file itself just emits a deterministic dump on stdout.
  *
- * The exported payload is built by TopToolbar.handleExportZip from each link's line_index_1,
- * line_index_2, heRef_2 and path_2 (ref_2 and a Sefaria target's heRef_2 are derived from them).
+ * The exported payload is what TopToolbar.handleExportZip writes, built by buildLinkRecords.
  */
 
 import { runLinkingParser } from '../src/utils/parserAlgorithm';
 import type { PluginConfig } from '../src/types';
+import { buildLinkRecords } from '../src/utils/exportLinks';
 
 /**
  * Source lines deliberately seeded with tokens that `normalizeText` deletes entirely —
@@ -19,6 +19,7 @@ import type { PluginConfig } from '../src/types';
  * shift every following highlight index.
  */
 const SOURCE = [
+  '<h2>דף ב.</h2>', // gives the lines a Sefaria address, so they reach the export
   'תנו רבנן שלושה דברים נאמרו בענין זה',
   'אמר — רבי יוחנן משום רבי שמעון בן יוחאי',
   'ABC אמר רבי אלעזר משום רבי חנינא תלמידי חכמים',
@@ -52,14 +53,8 @@ const CONFIG: PluginConfig = {
 
 const parsed = runLinkingParser(COMMENTARY, SOURCE, CONFIG);
 
-/** Exactly the fields TopToolbar writes into _links.json / _links.csv. */
-const exported = parsed.links.map(link => ({
-  line_index_1: link.line_index_1,
-  line_index_2: link.line_index_2,
-  heRef_2: link.heRef_2,
-  path_2: link.path_2,
-  connection_type: link.connection_type
-}));
+/** Exactly the records TopToolbar writes into _links.json / _links.csv. */
+const exported = buildLinkRecords({ ...parsed, config: CONFIG }).records;
 
 /** Display-only field — this is what the fix is expected to change. */
 const highlights = parsed.links.map(link => ({

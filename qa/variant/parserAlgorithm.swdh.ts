@@ -2536,7 +2536,7 @@ export function runLinkingParser(
         if (previousLink) {
           matchedSourceLineNum = previousLink.line_index_2;
           matchedSecondaryLineNum = previousLink.secondary_line_index || null;
-          targetSecondary = previousLink.secondaryTarget || null;
+          targetSecondary = (previousLink.secondaryTarget as 'rashi' | 'tosafot' | undefined) || null;
           isInherited = true;
         }
       }
@@ -2555,7 +2555,7 @@ export function runLinkingParser(
       if (!matchedSourceLineNum && !explicitSecondaryTarget && !explicitPrimaryTarget && !isBareShamNoInherit && previousLink && previousLink.line_index_2) {
         matchedSourceLineNum = previousLink.line_index_2;
         matchedSecondaryLineNum = previousLink.secondary_line_index || null;
-        targetSecondary = previousLink.secondaryTarget || null;
+        targetSecondary = (previousLink.secondaryTarget as 'rashi' | 'tosafot' | undefined) || null;
         isInherited = true;
       }
 
