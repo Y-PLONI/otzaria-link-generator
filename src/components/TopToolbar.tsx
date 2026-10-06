@@ -243,10 +243,10 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
       const warnings: string[] = [];
       if (misses.changed) warnings.push(`${misses.changed} קישורים לא יוצאו כי הקטע שלהם בספר היעד שונה בספרייה, והפניית ספריא שלהם אינה ודאית`);
       if (misses.unaddressed) warnings.push(`${misses.unaddressed} קישורים לא יוצאו כי לשורת היעד שלהם אין הפניה בספריא`);
-      if (misses.mirror) warnings.push(`${misses.mirror} קישורי מראה לספר הבסיס לא יוצאו כי לשורת הבסיס אין הפניה בספריא`);
+      if (misses.mirror) warnings.push(`${misses.mirror} קישורי מראה לספר הבסיס לא יוצאו כי לא ניתן לאמת את ההתאמה לגרסת הספרייה`);
       if (misses.header) warnings.push(`${misses.header} קישורים לשורת כותרת לא יוצאו (הספרייה מדלגת עליהם בכל מקרה)`);
       if (isSefariaOwnedCommentary(session.commentaryTitle)) {
-        warnings.push(`"${session.commentaryTitle}" קיים בספריא, וקישורים ממנו דורשים ref_1 שהתוסף אינו מייצא — הסנכרון של הספרייה עלול לדחות את הקובץ`);
+        warnings.push(`"${session.commentaryTitle}" קיים בספריא: הספרייה אינה מקבלת קישורים ידניים בין שני ספרי ספריא, וקישורים ממנו ליעד מקומי דורשים ref_1 שהתוסף אינו מייצא`);
       }
       if (windowsUnsafeName) {
         warnings.push('שם הספר מכיל תו שאסור בשמות קבצים ב-Windows: בעת העלאה לספרייה יש לשמור את שמות הקבצים שב-ZIP כמו שהם, כי הקישורים נטענים רק לפי שם הספר המדויק');

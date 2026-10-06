@@ -11,6 +11,9 @@
 
 import { runLinkingParser } from '../src/utils/parserAlgorithm';
 import type { PluginConfig } from '../src/types';
+import assert from 'node:assert/strict';
+import { syntheticBook } from './ref-fixtures';
+import { SEFARIA_REF_TABLE } from '../src/data/sefariaRefTable';
 import { buildLinkRecords } from '../src/utils/exportLinks';
 
 /**
@@ -51,10 +54,16 @@ const CONFIG: PluginConfig = {
   useWordWeighting: true
 };
 
+const sourceLines = SOURCE.split('\n');
+SEFARIA_REF_TABLE[CONFIG.targetBookName] = syntheticBook(sourceLines, 'Berakhot ', 'ברכות ', true,
+  Object.fromEntries(sourceLines.slice(1).map((_, index) => [index + 2, [3, index + 1]])));
+
 const parsed = runLinkingParser(COMMENTARY, SOURCE, CONFIG);
 
 /** Exactly the records TopToolbar writes into _links.json / _links.csv. */
 const exported = buildLinkRecords({ ...parsed, config: CONFIG }).records;
+
+assert.equal(exported.length, parsed.links.length, 'the export comparison must not be vacuous');
 
 /** Display-only field — this is what the fix is expected to change. */
 const highlights = parsed.links.map(link => ({

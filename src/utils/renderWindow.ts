@@ -1,3 +1,5 @@
+/** Cap the rows in one frame so a long inheritance chain cannot bypass virtualization. */
+export const MAX_GROUP_LINES = 4;
 /** How many groups of the edit list are mounted at once. */
 export const RENDER_WINDOW_SIZE = 60;
 /** How far the window moves when the user scrolls to one of its edges. */

@@ -14,6 +14,8 @@
  *    supported target is in data/sefaria/sefaria_he_titles.txt (SEFARIA_HE_TITLES overrides).
  */
 import fs from 'node:fs';
+import { refSegments } from '../src/utils/refSignatures.mjs';
+import { fromSignature, readSignatures, syntheticBook } from './ref-fixtures';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -39,7 +41,9 @@ const RASHI_BERAKHOT = 'רש"י על ברכות';
 const TOSAFOT_BERAKHOT = 'תוספות על ברכות';
 const SA_OC = 'שולחן ערוך, אורח חיים';
 
+const originals = [BERAKHOT, GENESIS, 'אסתר'].map(title => [title, SEFARIA_REF_TABLE[title]] as const);
 const gemaraText = [`<h1>${BERAKHOT}</h1>`, '<h2>דף ב.</h2>', 'x', 'x', '<h2>דף ב:</h2>', 'x', '<h2>דף טו.</h2>', 'x'];
+SEFARIA_REF_TABLE[BERAKHOT] = syntheticBook(gemaraText, 'Berakhot ', `${BERAKHOT} `, true, { 3: [3, 1], 4: [3, 2], 6: [4, 1], 8: [29, 1] });
 eq('gemara: first line under the daf header', sefariaRefFor(BERAKHOT, 3, gemaraText)?.ref, 'Berakhot 2a:1');
 eq('gemara: second line', sefariaRefFor(BERAKHOT, 4, gemaraText)?.ref, 'Berakhot 2a:2');
 eq('gemara: amud b restarts the count', sefariaRefFor(BERAKHOT, 6, gemaraText)?.ref, 'Berakhot 2b:1');
@@ -49,14 +53,18 @@ eq('gemara: a header line has no ref', sefariaRefFor(BERAKHOT, 2, gemaraText), u
 eq('gemara: no text, no ref', sefariaRefFor(BERAKHOT, 3), undefined);
 
 const tanakhText = [`<h1>${GENESIS}</h1>`, '<h2>פרק א</h2>', 'x', 'x', '<h2>פרק ב</h2>', 'x'];
+SEFARIA_REF_TABLE[GENESIS] = syntheticBook(tanakhText, 'Genesis ', `${GENESIS} `, false, { 3: [1, 1], 4: [1, 2], 6: [2, 1] });
+SEFARIA_REF_TABLE['אסתר'] = syntheticBook(tanakhText, 'Esther ', 'אסתר ', false, { 3: [1, 1], 4: [1, 2], 6: [2, 1] });
 eq('tanakh: chapter and verse', sefariaRefFor(GENESIS, 4, tanakhText)?.ref, 'Genesis 1:2');
 eq('tanakh: next chapter', sefariaRefFor(GENESIS, 6, tanakhText)?.ref, 'Genesis 2:1');
 const ESTHER = 'אסתר';
 eq('tanakh: a book of Ketuvim is a selectable target with a derived ref', [TANAKH_BOOKS.includes(ESTHER), sefariaRefFor(ESTHER, 4, tanakhText)?.ref], [true, 'Esther 1:2']);
 
+for (const [title, original] of originals) SEFARIA_REF_TABLE[title] = original;
+
 // A synthetic baked book: segments [h1], [daf 2a + 2 lines], [daf 2b + 2 lines].
 const bakedText = ['<h1>T</h1>', '<h2>\u05d3\u05e3 \u05d1.</h2>', '\u05d0\u05d1', '\u05d2\u05d3\u05d4', '<h2>\u05d3\u05e3 \u05d1:</h2>', '\u05d5', '\u05d6\u05d7'];
-const hashOf = (from: number, to: number) => segmentHash(bakedText.slice(from, to).map(lineSignature));
+const hashOf = (from: number, to: number) => refSegments(bakedText.map(lineSignature)).find(segment => segment.start === from)!.hash;
 const baked: BakedBook = {
   nodes: [['Rashi on X ', 'X ', 1]],
   refs: `|${hashOf(0, 1)}.|${hashOf(1, 4)}.=3:1:1+|${hashOf(4, 7)}.^^1:2A`
@@ -80,6 +88,33 @@ const inserted = [bakedText[0], '<h2>\u05d3\u05e3 \u05d0:</h2>', '\u05d9', ...ba
 eq('baked: a new segment shifts the rest without losing it', [3, 5, 9].map(l => refOf(l, inserted)),
   ['changed', 'Rashi on X 2a:1:1', 'Rashi on X 2b:3:1']);
 
+const sameLength = [...bakedText.slice(0, 2), 'גד', ...bakedText.slice(3)];
+eq('baked: different words with the same number of letters are rejected', refOf(3, sameLength), 'changed');
+const equalText = ['<h1>x</h1>', '<h2>סימן א</h2>', 'אבן גדולה', 'מים רבים'];
+const equalBook = syntheticBook(equalText, 'X ', 'x ', false, { 3: [1, 1], 4: [1, 2] });
+eq('baked: swapping equal-length lines cannot retain the old addresses',
+  resolveBakedRef(equalBook, 3, [equalText[0], equalText[1], equalText[3], equalText[2]]), 'changed');
+
+const nested = ['<h1>x</h1>', '<h2>סימן א</h2>', '<h3>סעיף א</h3>', 'מים רבים'];
+const nestedBook = syntheticBook(nested, 'X ', 'x ', false, { 4: [1, 1] });
+eq('baked: identical child text under a changed siman is rejected',
+  resolveBakedRef(nestedBook, 4, [nested[0], '<h2>סימן ב</h2>', ...nested.slice(2)]), 'changed');
+
+const longText = ['<h1>x</h1>', ...Array.from({ length: 300 }, (_, i) => [`<h2>סימן ${i + 1}</h2>`, `מים רבים ${i + 1}`]).flat()];
+const longBook = syntheticBook(longText, 'X ', 'x ', false,
+  Object.fromEntries(Array.from({ length: 300 }, (_, i) => [3 + i * 2, [i + 1, 1]])));
+const removedRun = [longText[0], ...longText.slice(501)];
+eq('baked: removal of more than 200 segments preserves verified later references',
+  (resolveBakedRef(longBook, 3, removedRun) as { ref: string }).ref, 'X 251:1');
+
+const repeated = ['<h1>x</h1>', '<h2>סימן א</h2>', 'מים רבים', '<h2>סימן א</h2>', 'מים רבים', '<h2>סימן ב</h2>', 'אבן גדולה'];
+const repeatedBook = syntheticBook(repeated, 'X ', 'x ', false, { 3: [1, 1], 5: [1, 2], 7: [2, 1] });
+const oneCopyRemoved = [repeated[0], ...repeated.slice(3)];
+eq('baked: removal of one identical section cannot assign the other copy its address',
+  resolveBakedRef(repeatedBook, 3, oneCopyRemoved), 'changed');
+eq('baked: a later unique section still resolves after an ambiguous deletion',
+  (resolveBakedRef(repeatedBook, 5, oneCopyRemoved) as { ref: string }).ref, 'X 2:1');
+
 eq('numerals round-trip 1..1000', Array.from({ length: 1000 }, (_, i) => i + 1).filter(n => hebrewToNumber(numberToHebrew(n)) !== n), []);
 eq('15 and 16 avoid the divine name', [numberToHebrew(15), numberToHebrew(16)], ['טו', 'טז']);
 eq('owned targets', [BERAKHOT, GENESIS, RASHI_BERAKHOT, SA_OC].map(isSefariaOwnedTarget), [true, true, true, true]);
@@ -101,11 +136,7 @@ if (fs.existsSync(DB_PATH)) {
  *  come back from the table of contents (verified identical to the stored text), others are 'x';
  *  a baked book's lines are rebuilt from its extracted signatures. */
 const SIGNATURES = path.join('data', 'sefaria', 'line-signatures.json');
-const signatures: Record<string, (string | number)[]> | null =
-  fs.existsSync(SIGNATURES) ? JSON.parse(fs.readFileSync(SIGNATURES, 'utf8')) : null;
-const fromSignature = (sig: string | number) => typeof sig === 'number'
-  ? (sig ? '\u05d0'.repeat(sig) : '-')
-  : `<h${sig.slice(0, sig.indexOf(':'))}>${sig.slice(sig.indexOf(':') + 1)}</h${sig.slice(0, sig.indexOf(':'))}>`;
+const signatures = readSignatures();
 const skeletonCache = new Map<string, { lines: string[]; heRefs: (string | null)[] } | null>();
 function libraryBook(title: string) {
   if (!db) return null;
@@ -243,7 +274,7 @@ if (!db) {
     return undefined;
   };
 
-  const targets = [...Object.keys(GEMARA_EN), ...Object.keys(TANAKH_EN), ...Object.keys(SEFARIA_REF_TABLE)];
+  const targets = [...new Set([...Object.keys(GEMARA_EN), ...Object.keys(TANAKH_EN), ...Object.keys(SEFARIA_REF_TABLE)])];
   let lines = 0, withRef = 0, books = 0;
   const misses: string[] = [];
   for (const title of targets) {
@@ -279,9 +310,10 @@ if (!fs.existsSync(prefixesFile)) {
   const ADDRESS_RE = /^\d+[ab]?(?::\d+[ab]?)*$/;
   // check_ref_shape: the longest prefix followed by a numeric address; offsets bound the paragraph.
   const bad = [...produced].filter(ref => {
-    const exact = [...prefixes.keys()].filter(p => ref.startsWith(p) && ADDRESS_RE.test(ref.slice(p.length)));
-    if (!exact.length) return true;
-    const prefix = exact.reduce((a, b) => (b.length > a.length ? b : a));
+    const addressMatch = ref.match(/\d+[ab]?(?::\d+[ab]?)*$/);
+    if (!addressMatch) return true;
+    const prefix = ref.slice(0, addressMatch.index);
+    if (!prefixes.has(prefix)) return true;
     const offsets = prefixes.get(prefix)!;
     const address = ref.slice(prefix.length).split(':');
     if (offsets.length && address.length === 2 && /^\d+$/.test(address[0]) && /^\d+$/.test(address[1])) {
@@ -299,7 +331,7 @@ if (!fs.existsSync(titlesFile)) {
   console.log(`SKIP  ownership: no ${titlesFile}`);
 } else {
   const owned = new Set(fs.readFileSync(titlesFile, 'utf8').split('\n').map(l => l.trim()));
-  const targets = [...Object.keys(GEMARA_EN), ...Object.keys(TANAKH_EN), ...Object.keys(SEFARIA_REF_TABLE)];
+  const targets = [...new Set([...Object.keys(GEMARA_EN), ...Object.keys(TANAKH_EN), ...Object.keys(SEFARIA_REF_TABLE)])];
   eq('ownership: every target that gets ref_2 is a Sefaria title', targets.filter(t => !owned.has(t)).map(ascii), []);
 }
 

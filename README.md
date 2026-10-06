@@ -47,7 +47,8 @@
 
 ### טבלאות נתונים אפויות
 
-`src/data/shasMirrorTable.ts` ו-`halachaMirrorTable.ts` (קישור כפול מרש"י/תוספות/נושאי כלים לשורת הבסיס) נוצרות ב-`scripts/generate-shas-mirror.mjs`, ו-`src/data/sefariaRefTable.ts` (ה-ref_2 של מפרשים ושולחן ערוך) נוצרת ב-`scripts/generate-sefaria-refs.mjs`.
+`src/data/shasMirrorTable.ts` ו-`halachaMirrorTable.ts` (קישור כפול מרש"י/תוספות/נושאי כלים לשורת הבסיס) נוצרות ב-`scripts/generate-shas-mirror.mjs`, ו-`src/data/sefariaRefTable.ts` (ה-ref_2 המאומת של כל ספרי היעד, כולל גמרא ותנ"ך) נוצרת ב-`scripts/generate-sefaria-refs.mjs`.
 הטבלאות שמורות בריפו, ו-`npm run build` אינו תלוי בקלטים שלהן: כשהם חסרים הסקריפטים מדלגים ומשאירים את הטבלאות השמורות.
-חידושן דורש מסד ספרייה מקומי (`OTZARIA_DB`), Node 22 עם `node:sqlite`, ולהפניות ספריא גם את ה-snapshots ב-`data/sefaria/` ו-Python עם `zstandard` להרצת `scripts/extract-sefaria-signatures.py`.
+חידושן דורש מסד ספרייה מקומי (`OTZARIA_DB`), Node 22 עם `node:sqlite`, את ה-snapshots ב-`data/sefaria/` ו-Python עם `zstandard` להרצת `scripts/extract-sefaria-signatures.py`.
+חידוש כל הטבלאות נעשה מאותו DB: תחילה `python3 scripts/extract-sefaria-signatures.py`, אחר כך `node --import tsx scripts/extract-shas-commentary-links.mjs`, ולבסוף `OTZARIA_DB=... npm run build`. `mirrorSignatures.ts` מוודא שטבלאות המראה וההפניות מתארות אותה גרסה.
 פרטים בכותרות הסקריפטים וב-[docs/DOUBLE_LINKS_AND_REVERSE_EXPORT.md](docs/DOUBLE_LINKS_AND_REVERSE_EXPORT.md) (סעיף 9.1).

@@ -34,8 +34,7 @@ export const HALACHA_COMMENTATORS: Record<string, HalachaCommentator[]> = {
     { id: 'magen_avraham', label: 'מגן אברהם', title: 'מגן אברהם', keywords: withPrefix('מג"א', 'מ"א', 'מגן אברהם') },
     taz('אורח חיים'),
     baerHeitev('באר היטב אורח חיים'),
-    // בלי השם המלא: "משנה" שבראש השורה נחתכת כמילת הקשר (SOURCE_CONTEXT_STRIP_RE)
-    { id: 'mishna_berura', label: 'משנה ברורה', title: 'משנה ברורה', keywords: withPrefix('מ"ב', 'משנ"ב') },
+    { id: 'mishna_berura', label: 'משנה ברורה', title: 'משנה ברורה', keywords: withPrefix('מ"ב', 'משנ"ב', 'משנה ברורה') },
     { id: 'biur_halacha', label: 'ביאור הלכה', title: 'ביאור הלכה', keywords: withPrefix('בה"ל', 'ביאור הלכה'), noSeifKatan: true }
   ],
   'שולחן ערוך, יורה דעה': [

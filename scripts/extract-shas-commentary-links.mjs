@@ -13,18 +13,16 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { segmentHash } from '../src/utils/refSignatures.mjs';
 
 const DB = process.env.OTZARIA_DB
   || path.join(os.homedir(), 'AppData', 'Roaming', 'otzaria', 'books', 'seforim.db');
 
 const outDir = process.argv[2] || path.join(process.cwd(), 'data', 'shas-commentary-links');
 
-/** category ids of the six sedarim — the tractates themselves are the books directly under them */
-const SEDER_CATEGORIES = [13, 14, 15, 16, 17, 18];
-/** category subtrees holding the two commentary series */
-const COMMENTARY_ROOTS = { 'רש"י': 372, 'תוספות': 289 };
+const COMMENTARY_SERIES = ['רש"י', 'תוספות'];
 /** connection_type.name = 'COMMENTARY' */
-const COMMENTARY_TYPE = 1;
+const COMMENTARY_TYPE_NAME = 'COMMENTARY';
 
 if (!fs.existsSync(DB)) {
   console.error(`library database not found at ${DB}\nset OTZARIA_DB to override`);
@@ -32,20 +30,18 @@ if (!fs.existsSync(DB)) {
 }
 
 const db = new DatabaseSync(DB, { readOnly: true });
+const COMMENTARY_TYPE = db.prepare('SELECT id FROM connection_type WHERE name = ?').get(COMMENTARY_TYPE_NAME)?.id;
+if (COMMENTARY_TYPE === undefined) throw new Error('No COMMENTARY connection type in database');
 
-const tractates = db.prepare(`
-  SELECT b.id, b.title, b.totalLines, c.title AS seder, b.orderIndex
-    FROM book b JOIN category c ON c.id = b.categoryId
-   WHERE b.categoryId IN (${SEDER_CATEGORIES.join(',')})
-   ORDER BY b.categoryId, b.orderIndex
-`).all();
+const { SHAS_TRACTATES } = await import('../src/types.ts');
+const referenceSignature = id => segmentHash(db.prepare('SELECT heRef FROM line WHERE bookId = ? ORDER BY lineIndex').all(id).map(row => row.heRef ?? ''));
 
-const commentariesFor = db.prepare(`
-  SELECT b.id, b.title, b.totalLines
-    FROM book b
-    JOIN category_closure cc ON cc.descendantId = b.categoryId
-   WHERE cc.ancestorId = ? AND b.title = ?
-`);
+const tractates = SHAS_TRACTATES.map(title => {
+  const book = db.prepare('SELECT b.id, b.title, b.totalLines, c.title AS seder, b.orderIndex FROM book b JOIN category c ON c.id = b.categoryId WHERE b.title = ?').get(title);
+  if (!book) throw new Error(`${title}: not in the library`);
+  return book;
+});
+const commentariesFor = db.prepare('SELECT id, title, totalLines FROM book WHERE title = ?');
 
 const linksFor = db.prepare(`
   SELECT l.id            AS linkId,
@@ -91,11 +87,12 @@ for (const tractate of tractates) {
     seder: tractate.seder,
     bookId: tractate.id,
     totalLines: tractate.totalLines,
+    refSignature: referenceSignature(tractate.id),
     commentaries: [],
   };
 
-  for (const [series, root] of Object.entries(COMMENTARY_ROOTS)) {
-    const book = commentariesFor.get(root, `${series} על ${tractate.title}`);
+  for (const series of COMMENTARY_SERIES) {
+    const book = commentariesFor.get(`${series} על ${tractate.title}`);
     if (!book) continue;
 
     const links = linksFor.all(tractate.id, book.id);
@@ -120,6 +117,7 @@ for (const tractate of tractates) {
       title: book.title,
       bookId: book.id,
       totalLines: book.totalLines,
+      refSignature: referenceSignature(book.id),
       linkCount: links.length,
       links,
     });
@@ -150,13 +148,13 @@ const halacha = [];
 for (const [part, commentators] of Object.entries(HALACHA_COMMENTATORS)) {
   const base = bookByTitle.get(part);
   if (!base) throw new Error(`${part}: not in the library`);
-  const entry = { base: part, bookId: base.id, totalLines: base.totalLines, commentaries: [] };
+  const entry = { base: part, bookId: base.id, totalLines: base.totalLines, refSignature: referenceSignature(base.id), commentaries: [] };
   for (const commentator of commentators) {
     const book = bookByTitle.get(commentator.title);
     if (!book) throw new Error(`${commentator.title}: not in the library`);
     const links = linksFor.all(base.id, book.id).map(({ sourceLineIndex, targetLineIndex }) => ({ sourceLineIndex, targetLineIndex }));
     entry.commentaries.push({
-      series: commentator.id, title: book.title, bookId: book.id, totalLines: book.totalLines, linkCount: links.length, links,
+      series: commentator.id, title: book.title, bookId: book.id, totalLines: book.totalLines, refSignature: referenceSignature(book.id), linkCount: links.length, links,
     });
     grandTotal += links.length;
   }

@@ -391,7 +391,7 @@ export const SetupMode: React.FC<SetupModeProps> = ({ onRunAlgorithm }) => {
         }
       } else {
         // רק נושאי כלים שהפירוש מזכיר בשמם: כל ספר כזה הוא מיליוני תווים
-        for (const source of secondarySourcesCitedIn(commentaryContent, { sourceCategory: category, targetBookName: targetBook })) {
+        for (const source of secondarySourcesCitedIn(commentaryContent, { sourceCategory: category, targetBookName: targetBook, halachaMultiLinePieces, halachaSeifKatan: halachaMultiLinePieces && halachaSeifKatan })) {
           try {
             const result = await tryFetchSecondarySource([source.title]);
             if (result.text) secondaries[source.id] = result;

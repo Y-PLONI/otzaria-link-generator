@@ -30,6 +30,7 @@ import { DragRelinkOverlay } from './DragRelinkOverlay';
 import { useDragRelink } from '../hooks/useDragRelink';
 import { buildDragCandidates, parseDropId } from '../utils/dragCandidates';
 import {
+  MAX_GROUP_LINES,
   RENDER_WINDOW_SIZE,
   RENDER_WINDOW_STEP,
   clampWindowStart,
@@ -436,6 +437,8 @@ export const EditMode: React.FC<EditModeProps> = ({
 
   // Floating Warning Widget state
   const [isUnlinkedPanelOpen, setIsUnlinkedPanelOpen] = useState(false);
+  const [unlinkedPage, setUnlinkedPage] = useState(0);
+  const unlinkedListRef = useRef<HTMLDivElement>(null);
 
   // Bulk actions for confidence & approval
   const handleApproveAllHighConfidence = () => {
@@ -781,6 +784,10 @@ export const EditMode: React.FC<EditModeProps> = ({
     return indices;
   }, [commentaryLines, linkByLine, sourceSearchQuery, searchableLines, sortMode, chainProfile]);
 
+  const unlinkedPageSize = 60;
+  const unlinkedPageIndex = Math.min(unlinkedPage, Math.max(0, Math.ceil(unlinkedCommLines.length / unlinkedPageSize) - 1));
+  const unlinkedStart = unlinkedPageIndex * unlinkedPageSize;
+
   const groupedCommentary = useMemo(() => {
     const groups: {
       targetKey: string;
@@ -804,7 +811,7 @@ export const EditMode: React.FC<EditModeProps> = ({
         : `unlinked-${pendingHead ?? commLineIdx1}`;
 
       const lastGroup = groups[groups.length - 1];
-      if (lastGroup && lastGroup.targetKey === targetKey && (linkObj || pendingHead !== undefined)) {
+      if (lastGroup && lastGroup.targetKey === targetKey && lastGroup.commIndices.length < MAX_GROUP_LINES && (linkObj || pendingHead !== undefined)) {
         lastGroup.commIndices.push(commLineIdx1);
         lastGroup.links.push(linkObj);
       } else {
@@ -869,10 +876,10 @@ export const EditMode: React.FC<EditModeProps> = ({
   const [avgGroupHeight, setAvgGroupHeight] = useState(160);
   const [viewportHeight, setViewportHeight] = useState(() => (typeof window === 'undefined' ? 800 : window.innerHeight));
   // Taller than the screen plus both sentinel margins and a step, or a move would bounce straight back.
-  const windowSize = Math.max(
+  const windowSize = Math.min(120, Math.max(
     RENDER_WINDOW_SIZE,
     Math.ceil((viewportHeight + 2 * WINDOW_SENTINEL_MARGIN) / avgGroupHeight) + 2 * RENDER_WINDOW_STEP
-  );
+  ));
   const windowStart = clampWindowStart(pinnedStart ?? windowState.index, groupedCommentary.length, windowSize);
   const windowEnd = Math.min(groupedCommentary.length, windowStart + windowSize);
   const topSpacerRef = useRef<HTMLDivElement>(null);
@@ -986,13 +993,33 @@ export const EditMode: React.FC<EditModeProps> = ({
       recordViewAnchor();
       setViewportHeight(window.innerHeight);
     };
+    // Native Home/End scrolling can animate through a spacer. Restoring the row anchor during
+    // that animation cancels it halfway through the document, so jump to the edge explicitly.
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.key !== 'Home' && event.key !== 'End') || event.defaultPrevented || event.shiftKey
+          || event.altKey || editingCommLineIdx !== null || groupedCommentary.length === 0) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"], [role="textbox"], [data-unlinked-panel]')) return;
+      event.preventDefault();
+      const edge = event.key === 'End' ? 'end' : 'start';
+      const index = edge === 'end' ? clampWindowStart(groupedCommentary.length, groupedCommentary.length, windowSize) : 0;
+      if (index === windowStart) {
+        window.scrollTo(0, edge === 'end' ? document.documentElement.scrollHeight : 0);
+        return;
+      }
+      jumpingRef.current = true;
+      viewAnchorRef.current = { line: groupedCommentary[index].commIndices[0], top: 0, edge };
+      setWindowStart(index);
+    };
+    window.addEventListener('keydown', onKeyDown);
     window.addEventListener('scroll', onScroll, { passive: true });
     window.addEventListener('resize', onResize);
     return () => {
+      window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('scroll', onScroll);
       window.removeEventListener('resize', onResize);
     };
-  }, [groupedCommentary, windowStart, windowEnd, windowSize, avgGroupHeight, recordViewAnchor, setWindowStart]);
+  }, [groupedCommentary, windowStart, windowEnd, windowSize, avgGroupHeight, recordViewAnchor, setWindowStart, editingCommLineIdx]);
 
   useEffect(() => {
     const t = setTimeout(updateSvgLines, 100);
@@ -1800,9 +1827,9 @@ export const EditMode: React.FC<EditModeProps> = ({
                     ) : (
                       <div className="p-5 rounded-xl border border-dashed border-[var(--color-outline)] text-center text-xs text-[var(--color-on-surface-variant)] space-y-1.5">
                         <div>אין מקור מקושר. לחץ על כפתור העריכה בכרטיס הפירוש כדי לקשר.</div>
-                        {group.commIndices.length > 1 && (
+                        {(inheritanceIndex.followerCountByLine.get(firstCommIdx) ?? 0) > 0 && (
                           <div>
-                            קישור שורה {firstCommIdx} יחיל את ההקשר גם על {group.commIndices.length - 1} שורות הבא"ד שאחריה.
+                            קישור שורה {firstCommIdx} יחיל את ההקשר גם על {inheritanceIndex.followerCountByLine.get(firstCommIdx)} שורות הבא"ד שאחריה.
                           </div>
                         )}
                       </div>
@@ -1833,7 +1860,7 @@ export const EditMode: React.FC<EditModeProps> = ({
       {/* Floating Unlinked Lines Widget */}
       <div className="fixed bottom-5 right-5 z-40">
         {isUnlinkedPanelOpen ? (
-          <div
+          <div data-unlinked-panel
             className={`bg-[var(--color-surface)] rounded-2xl shadow-2xl backdrop-blur-md flex flex-col max-w-sm sm:max-w-md w-[calc(100vw-2.5rem)] max-h-[70vh] border-2 ${
               unlinkedCommLines.length > 0
                 ? 'border-rose-400 dark:border-rose-800'
@@ -1864,20 +1891,28 @@ export const EditMode: React.FC<EditModeProps> = ({
 
             {/* List */}
             {unlinkedCommLines.length > 0 && (
-              <div className="p-3.5 space-y-2.5 overflow-y-auto">
+              <div ref={unlinkedListRef} className="p-3.5 space-y-2.5 overflow-y-auto">
                 <p className="text-xs text-[var(--color-on-surface-variant)] font-medium">
                   לחץ על השורה כדי לגלול אליה, או על כפתור העריכה כדי לקשר:
                 </p>
-                {unlinkedCommLines.map(un => renderCommentaryBox(undefined, un.lineIndex1, {
+                {unlinkedCommLines.slice(unlinkedStart, unlinkedStart + unlinkedPageSize).map(un => renderCommentaryBox(undefined, un.lineIndex1, {
                   onRowClick: () => handleScrollToUnlinkedRow(un.lineIndex1),
                   pointerCursor: true
                 }))}
               </div>
             )}
+            {unlinkedCommLines.length > unlinkedPageSize && (
+              <div className="flex items-center justify-between gap-2 px-3.5 py-2 border-t border-[var(--color-outline)] shrink-0 text-xs">
+                <button disabled={unlinkedPageIndex === 0} onClick={() => { setUnlinkedPage(unlinkedPageIndex - 1); unlinkedListRef.current?.scrollTo(0, 0); }} className="disabled:opacity-40" title="עמוד קודם">הקודם</button>
+                <span>{unlinkedStart + 1}–{Math.min(unlinkedStart + unlinkedPageSize, unlinkedCommLines.length)} מתוך {unlinkedCommLines.length}</span>
+                <button disabled={unlinkedStart + unlinkedPageSize >= unlinkedCommLines.length} onClick={() => { setUnlinkedPage(unlinkedPageIndex + 1); unlinkedListRef.current?.scrollTo(0, 0); }} className="disabled:opacity-40" title="עמוד הבא">הבא</button>
+              </div>
+            )}
+
           </div>
         ) : (
           <button
-            onClick={() => setIsUnlinkedPanelOpen(true)}
+            onClick={() => { setUnlinkedPage(0); setIsUnlinkedPanelOpen(true); }}
             className={`inline-flex items-center gap-1.5 h-10 px-3 rounded-full shadow-xl backdrop-blur-md border-2 transition-transform hover:scale-105 ${
               unlinkedCommLines.length > 0
                 ? 'bg-rose-50 dark:bg-rose-950/80 border-rose-400 dark:border-rose-800 text-rose-900 dark:text-rose-100'

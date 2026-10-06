@@ -846,9 +846,11 @@ const BARE_SHAM_STRIP_RE = /^שם\s*[:.\-]?\s*(?!ד"ה|דה|בד"ה|בדה|א"ד
  * Looping to a fixed point is bounded by construction — each pass must consume at least one
  * leading token or it stops.
  */
-function stripLeadingMarkers(text: string): string {
+function stripLeadingMarkers(text: string, protectedKeywords?: string[]): string {
   let out = text;
   for (let pass = 0; pass < 4; pass++) {
+    // A full secondary title such as משנה ברורה includes a context word; preserve the title.
+    if (protectedKeywords && startsWithSourceKeyword(out, protectedKeywords)) break;
     const before = out;
     out = out.replace(LEADING_BULLET_STRIP_RE, '')
              .replace(SOURCE_CONTEXT_STRIP_RE, '')
@@ -857,6 +859,11 @@ function stripLeadingMarkers(text: string): string {
     if (out === before) break;
   }
   return out;
+}
+
+function sourceKeywordPrefix(normalized: string, protectedKeywords?: string[]): { cleanedPrefix: string; lineForKeywordCheck: string } {
+  const cleanedPrefix = normalized.replace(LEADING_BULLET_STRIP_RE, '').replace(BARE_SHAM_STRIP_RE, '').trim();
+  return { cleanedPrefix, lineForKeywordCheck: stripLeadingMarkers(cleanedPrefix, protectedKeywords) || cleanedPrefix || normalized };
 }
 
 /**
@@ -901,18 +908,19 @@ export function secondarySourcesFor(config: Pick<PluginConfig, 'sourceCategory' 
  */
 export function secondarySourcesCitedIn(
   commentaryText: string,
-  config: Pick<PluginConfig, 'sourceCategory' | 'targetBookName'>
+  config: Pick<PluginConfig, 'sourceCategory' | 'targetBookName' | 'halachaMultiLinePieces' | 'halachaSeifKatan'>
 ): SecondarySource[] {
   const sources = secondarySourcesFor(config);
   const cited = new Set<SecondarySource>();
+  const profile = profileForConfig(config);
+  const protectedKeywords = profile.kind === 'halacha' ? sources.flatMap(source => source.keywordsNorm.filter(keyword => keyword.includes(' '))) : undefined;
   for (const line of commentaryText.split('\n')) {
     if (cited.size === sources.length) break;
-    const words = normalizeText(line.slice(0, 200)).split(' ');
-    for (let i = 0; i < Math.min(3, words.length); i++) {
-      const rest = words.slice(i).join(' ');
-      for (const source of sources) {
-        if (!cited.has(source) && startsWithSourceKeyword(rest, source.keywordsNorm)) cited.add(source);
-      }
+    // Use the engine's preparation, including halacha numbering and stacked pointer words.
+    const prepared = stripHalachaLeadIn(stripContentMarkup(line), profile);
+    const { lineForKeywordCheck } = sourceKeywordPrefix(normalizeText(prepared, false), protectedKeywords);
+    for (const source of sources) {
+      if (startsWithSourceKeyword(lineForKeywordCheck, source.keywordsNorm)) cited.add(source);
     }
   }
   return sources.filter(source => cited.has(source));
@@ -954,7 +962,7 @@ export function stripSecondaryPrefix(line: string): string {
   return stripSecondaryPrefixWith(line, SECONDARY_PREFIX_STRIP_RE);
 }
 
-function stripSecondaryPrefixWith(line: string, prefixRe: RegExp): string {
+function stripSecondaryPrefixWith(line: string, prefixRe: RegExp, protectedKeywords?: string[]): string {
   if (!line) return '';
   // Step 1: normalize quotes and remove HTML + nikud before regex matching (fixes BUG-37)
   //
@@ -980,7 +988,7 @@ function stripSecondaryPrefixWith(line: string, prefixRe: RegExp): string {
   // is fully consumed rather than only its first word (see stripLeadingMarkers / BUG-04).
   // A bare "שם" carries no target of its own, so whatever real citation text follows it must
   // be exposed here to be searched like any other line.
-  cleaned = stripLeadingMarkers(cleaned);
+  cleaned = stripLeadingMarkers(cleaned, protectedKeywords);
 
   // Step 2: strip the secondary-source prefix.
   // The regex is the run's: built from its secondary sources' names (buildSecondaryPrefixStripRe).
@@ -1017,11 +1025,7 @@ export function isBareSourceLabelLine(line: string): boolean {
   // Same three steps as the keyword test in runLinkingParser: normalise, strip the pointer
   // tokens in front of the source name, then test the source names themselves.
   const normalized = normalizeText(line.trim(), false);
-  const cleanedPrefix = normalized
-    .replace(LEADING_BULLET_STRIP_RE, '')
-    .replace(BARE_SHAM_STRIP_RE, '')
-    .trim();
-  const lineForKeywordCheck = stripLeadingMarkers(cleanedPrefix) || cleanedPrefix || normalized;
+  const { lineForKeywordCheck } = sourceKeywordPrefix(normalized);
 
   const namesSecondary = startsWithSourceKeyword(lineForKeywordCheck, RASHI_KEYWORDS_NORM)
     || startsWithSourceKeyword(lineForKeywordCheck, TOSAFOT_KEYWORDS_NORM);
@@ -1468,6 +1472,7 @@ export function runLinkingParser(
   // ציטוט רש"י/תוס' מנותב אליו גם כשהספר לא נטען; נושא כלים שלא נטען אינו מוציא
   // את השורה מחיפוש בשו"ע.
   const routableSources = profile.kind === 'halacha' ? sources.filter(s => secondaryDocs.has(s.id)) : sources;
+  const protectedSourceKeywords = profile.kind === 'halacha' ? routableSources.flatMap(source => source.keywordsNorm.filter(keyword => keyword.includes(' '))) : undefined;
   const secondaryPrefixRe = profile.kind === 'halacha' && routableSources.length > 0
     ? buildSecondaryPrefixStripRe([RASHI_KEYWORDS, TOSAFOT_KEYWORDS, ...routableSources.map(s => s.keywords)])
     : SECONDARY_PREFIX_STRIP_RE;
@@ -2362,7 +2367,8 @@ export function runLinkingParser(
     if (res.lineNum) return { result: res, rung: 'B' };
 
     // Rung C: also widen the range to the neighboring segments (page/perek before & after)
-    const segIdx = allSegments.findIndex(s => s.startLine === segStart && s.endLine === segEnd);
+    // A siman is a hard boundary: retry may relax scoring, never search a different siman.
+    const segIdx = profile.kind === 'halacha' ? -1 : allSegments.findIndex(s => s.startLine === segStart && s.endLine === segEnd);
     let widenedStart = segStart;
     let widenedEnd = segEnd;
     if (segIdx > 0) widenedStart = allSegments[segIdx - 1].startLine;
@@ -2668,14 +2674,7 @@ export function runLinkingParser(
       // actually names the target — see stripLeadingMarkers (BUG-04). `cleanedPrefix` keeps
       // the source-context word itself, since that word IS the primary-source signal tested
       // below; only the tokens in front of it are removed.
-      let cleanedPrefix = normalizedPrefixLine
-        .replace(LEADING_BULLET_STRIP_RE, '')
-        .replace(BARE_SHAM_STRIP_RE, '')
-        .trim();
-      const strippedContextLine = stripLeadingMarkers(cleanedPrefix);
-      // Use the stripped version for keyword detection; fall back to full line if stripping
-      // left the line empty (meaning the whole line was just "גמ'" with no secondary keyword).
-      const lineForKeywordCheck = strippedContextLine || cleanedPrefix || normalizedPrefixLine;
+      const { cleanedPrefix, lineForKeywordCheck } = sourceKeywordPrefix(normalizedPrefixLine, protectedSourceKeywords);
 
       let targetSecondary: string | null = null;
       let explicitSecondaryTarget = false;
@@ -2756,7 +2755,7 @@ export function runLinkingParser(
 
       // Extract DH search text using stripped line if secondary prefix present
       let lineForDh = skCitation ? skCitation.dh
-        : citation?.dh && namedSource ? citation.dh : stripSecondaryPrefixWith(trimmedLine, secondaryPrefixRe);
+        : citation?.dh && namedSource ? citation.dh : stripSecondaryPrefixWith(trimmedLine, secondaryPrefixRe, protectedSourceKeywords);
       if (DEBUG) console.log(`  🔍 lineForDh='${lineForDh}' (after stripSecondaryPrefix)`);
       // In הלכה a name like ט"ז or מ"ב may be a number of the שו"ע itself: when routing to the
       // נושא כלים finds nothing, the line is read exactly as it would be without that book.

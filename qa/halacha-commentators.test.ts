@@ -7,11 +7,12 @@
  * חלקים 1–2 סינתטיים. חלק 3 קורא את מסד הספרייה (OTZARIA_DB) ומדלג כשאין מסד.
  */
 import fs from 'node:fs';
+import { fromSignature, readSignatures } from './ref-fixtures';
 import os from 'node:os';
 import path from 'node:path';
 import { runLinkingParser, secondarySourcesFor, secondarySourcesCitedIn } from '../src/utils/parserAlgorithm';
 import { buildLinkRecords } from '../src/utils/exportLinks';
-import { mirrorBaseLine } from '../src/utils/shasMirror';
+import { mirrorBaseLines } from '../src/utils/shasMirror';
 import { parseSeifKatanCitation, seifKatanLine, hebrewNumeral } from '../src/utils/seifKatan';
 import { HALACHA_COMMENTATORS } from '../src/data/halachaCommentators';
 import { SEFARIA_REF_TABLE } from '../src/data/sefariaRefTable';
@@ -132,6 +133,32 @@ for (const part of HALACHA_BOOKS) {
     parseSeifKatanCitation(`בה"ל ס"ק ג'`, ocSources), null);
 }
 
+{
+  const part = HALACHA_BOOKS[1];
+  const shach = ['<h2>סימן א</h2>', PHRASES[1], '<h2>סימן ב</h2>', PHRASES[0] + ' ועוד'].join('\n');
+  const commentary = ['<h2>סימן א</h2>', `ש"ך ד"ה ${PHRASES[0]}. ביאור`].join('\n');
+  const result = runLinkingParser(commentary, SA_TEXT, config(part), undefined, undefined, undefined, undefined, { shach: { text: shach } });
+  eq('explicit retry does not select the next siman', result.links.filter(link => link.secondaryTarget).length, 0);
+  for (const prefix of ['(א) שם בגמרא', '(א) שם שם', '(א) שם במשנה', '(א) שם פיסקא']) {
+    const comm = ['<h2>סימן א</h2>', `${prefix} ש"ך ד"ה ${PHRASES[1]}. ביאור`].join('\n');
+    const sources = secondarySourcesCitedIn(comm, config(part));
+    eq(`preload agrees with routing after ${ascii(prefix)}`, sources.map(source => source.id), ['shach']);
+    const parsed = runLinkingParser(comm, SA_TEXT, config(part), undefined, undefined, undefined, undefined, { shach: { text: shach } });
+    eq(`routing after ${ascii(prefix)}`, parsed.links.filter(link => link.secondaryTarget).map(link => link.secondaryTarget), ['shach']);
+  }
+}
+
+{
+  const part = HALACHA_BOOKS[0];
+  const book = ['<h2>סימן א</h2>', PHRASES[0] + ' ועוד'].join('\n');
+  for (const prefix of ['משנה ברורה', 'במשנה ברורה', '(א) משנה ברורה', 'שם בגמרא במשנה ברורה']) {
+    const comm = ['<h2>סימן א</h2>', `${prefix} ד"ה ${PHRASES[0]}. ביאור`].join('\n');
+    eq(`preload the full title after ${ascii(prefix)}`, secondarySourcesCitedIn(comm, config(part)).map(source => source.id), ['mishna_berura']);
+    const result = runLinkingParser(comm, SA_TEXT, config(part), undefined, undefined, undefined, undefined, { mishna_berura: { text: book } });
+    eq(`route the full title after ${ascii(prefix)}`, result.links.map(link => link.secondaryTarget), ['mishna_berura']);
+  }
+}
+
 // ── 3. against the library: tables, refs and the exported mirror row ─────────────────────────
 const DB_PATH = process.env.OTZARIA_DB || path.join(os.homedir(), 'AppData', 'Roaming', 'otzaria', 'books', 'seforim.db');
 if (!fs.existsSync(DB_PATH)) {
@@ -139,6 +166,7 @@ if (!fs.existsSync(DB_PATH)) {
 } else {
   const { DatabaseSync } = await import('node:sqlite');
   const db = new DatabaseSync(DB_PATH, { readOnly: true });
+  const commentaryType = (db.prepare('SELECT id FROM connection_type WHERE name = ?').get('COMMENTARY') as { id: number }).id;
   const bookId = (title: string) => (db.prepare('SELECT id FROM book WHERE title = ?').get(title) as { id: number } | undefined)?.id;
   /** Header lines from the table of contents, every other line 'x' — enough for refs and line counts. */
   const skeleton = (id: number) => {
@@ -152,11 +180,8 @@ if (!fs.existsSync(DB_PATH)) {
   };
   // The baked ref table is anchored to the text: rebuild it from the extracted line signatures.
   const SIGNATURES = path.join('data', 'sefaria', 'line-signatures.json');
-  const signatures: Record<string, (string | number)[]> | null =
-    fs.existsSync(SIGNATURES) ? JSON.parse(fs.readFileSync(SIGNATURES, 'utf8')) : null;
-  const textOf = (title: string) => signatures?.[title]?.map(sig => typeof sig === 'number'
-    ? (sig ? 'א'.repeat(sig) : '-')
-    : `<h${sig.slice(0, sig.indexOf(':'))}>${sig.slice(sig.indexOf(':') + 1)}</h${sig.slice(0, sig.indexOf(':'))}>`);
+  const signatures = readSignatures();
+  const textOf = (title: string) => signatures?.[title]?.map(fromSignature);
   if (!signatures) console.log(`SKIP  library export: no ${SIGNATURES}`);
 
   let checked = 0;
@@ -172,15 +197,15 @@ if (!fs.existsSync(DB_PATH)) {
 
       // The mirror names one of the שו"ע lines the library links that line to, and no other line.
       const linked = new Map<number, Set<number>>();
-      for (const r of db.prepare('SELECT sl.lineIndex AS s, l.targetLineIndex AS t FROM link l JOIN line sl ON sl.id = l.sourceLineId WHERE l.connectionTypeId = 1 AND l.sourceBookId = ? AND l.targetBookId = ?')
-        .all(partId, id) as { s: number; t: number }[]) {
+      for (const r of db.prepare('SELECT sl.lineIndex AS s, l.targetLineIndex AS t FROM link l JOIN line sl ON sl.id = l.sourceLineId WHERE l.connectionTypeId = ? AND l.sourceBookId = ? AND l.targetBookId = ?')
+        .all(commentaryType, partId, id) as { s: number; t: number }[]) {
         if (!linked.has(r.t + 1)) linked.set(r.t + 1, new Set());
         linked.get(r.t + 1)!.add(r.s + 1);
       }
       const lines = skeleton(id);
       for (let line = 1; line <= lines.length; line++) {
-        const mirror = mirrorBaseLine(part, c.id, line);
-        const ok = linked.has(line) ? mirror !== undefined && linked.get(line)!.has(mirror) : mirror === undefined;
+        const mirror = mirrorBaseLines(part, c.id, line);
+        const ok = linked.has(line) ? mirror !== undefined && mirror.every(target => linked.get(line)!.has(target)) && mirror.length === linked.get(line)!.size : mirror === undefined;
         if (!ok && wrong.length < 5) wrong.push(`${ascii(c.title)} line ${line}: mirror ${mirror}`);
         if (!ok) failures++;
       }
@@ -198,9 +223,9 @@ if (!fs.existsSync(DB_PATH)) {
       };
       const { records, misses } = buildLinkRecords(session);
       const missingRefs = misses.header + misses.changed + misses.unaddressed + misses.mirror;
-      const mirrorLine = mirrorBaseLine(part, c.id, target);
+      const mirrorLine = mirrorBaseLines(part, c.id, target);
       const shape = records.map(r => [r.line_index_2, r.path_2, Boolean(r.ref_2)]);
-      if (missingRefs !== 0 || JSON.stringify(shape) !== JSON.stringify([[target, `${c.title}.txt`, true], [mirrorLine, `${part}.txt`, true]])) {
+      if (missingRefs !== 0 || JSON.stringify(shape) !== JSON.stringify([[target, `${c.title}.txt`, true], ...mirrorLine!.map(line => [line, `${part}.txt`, true])])) {
         failures++;
         wrong.push(`${ascii(c.title)} export: ${ascii(shape)} missing=${missingRefs}`);
       }

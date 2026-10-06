@@ -42,8 +42,10 @@ const tosafot = [
   'ולא יבעול דלא רמו בה תיגרא כל שכן אם יעשה נשואין בליל חמישי',            // 3
 ].join('\n');
 
+let failures = 0;
 const eq = (name: string, actual: unknown, expected: unknown) => {
   const a = JSON.stringify(actual), e = JSON.stringify(expected);
+  if (a !== e) failures++;
   console.log(`${a === e ? 'PASS' : 'FAIL'}  ${name}${a === e ? '' : `\n   got ${a}\n   want ${e}`}`);
 };
 
@@ -72,7 +74,8 @@ eq('"בתוספת בד\\"ה" — פני יהושע\'s spelling — routes to Tos
   linkOf(res.links, 3)?.secondaryTarget, 'tosafot');
 
 eq('"תוספות ד\\"ה" routes to Tosafot',
-  linkOf(res.links, 4)?.secondaryTarget, 'tosafot');
+  linkOf(runLinkingParser([commentary.split('\n')[0], commentary.split('\n')[3]].join('\n'), source, config, undefined, tosafot).links, 2)?.secondaryTarget, 'tosafot');
+// The two aliases are tested independently: the parser reserves a matched line within one run.
 
 /* ── 3. the prefix strip cuts whole words only ──────────────────────────────────────────── */
 
@@ -86,3 +89,5 @@ eq('a real citation prefix is still stripped',
    'רש"י ד"ה בתולה', 'שם בפי\' רש"י בד"ה ופליגי', 'בא"ד ומתוך', 'שם בגמרא פיסקא על פירות']
     .map(stripSecondaryPrefix),
   ['בתולה נשאת', 'בתולה', 'ליום', 'ליום', 'בתולה', 'ופליגי', 'ומתוך', 'על פירות']);
+
+if (failures) process.exitCode = 1;

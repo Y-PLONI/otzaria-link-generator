@@ -1,6 +1,6 @@
 import { OtzariaLink, SessionState } from '../types';
 import { secondaryLinesOf } from './parserAlgorithm';
-import { mirrorBaseLine, hasMirrorData } from './shasMirror';
+import { resolveMirrorBaseLines, hasMirrorData } from './shasMirror';
 import { resolveSefariaRef, isSefariaOwnedTarget, titleOfPath } from './sefariaRefs';
 
 /** One record of `<commentary>_links.json`, in the key order the library's files use. */
@@ -46,19 +46,22 @@ export function buildLinkRecords(
   // library's own links baked into the mirror tables (keyed by the secondary line).
   const base = session.config.targetBookName;
   const withMirror = hasMirrorData(base);
-  const mirrorRecord = (link: OtzariaLink) => {
-    if (!withMirror || !link.secondaryTarget) return null;
+  const mirrorRecords = (link: OtzariaLink) => {
+    if (!withMirror || !link.secondaryTarget) return [];
     // Coverage is whatever the library's own links cover — a miss is a row to skip.
-    const baseLine = mirrorBaseLine(base, link.secondaryTarget, link.line_index_2);
-    return baseLine ? linkRecord(link.line_index_1, baseLine, base, `${base}.txt`, session.sourceLines, true) : null;
+    const resolved = resolveMirrorBaseLines(base, link.secondaryTarget, titleOfPath(link.path_2),
+      link.line_index_2, targetLinesOf(link), session.sourceLines);
+    misses.mirror += resolved.misses;
+    return resolved.lines.map(line => linkRecord(link.line_index_1, line, base, `${base}.txt`, session.sourceLines, true));
   };
 
   const seen = new Set<string>();
   const records = session.links
-    .flatMap(link => [
-      linkRecord(link.line_index_1, link.line_index_2, link.heRef_2, link.path_2, targetLinesOf(link)),
-      mirrorRecord(link)
-    ])
+    .flatMap(link => {
+      const primary = linkRecord(link.line_index_1, link.line_index_2, link.heRef_2, link.path_2, targetLinesOf(link));
+      // A rejected citation must not survive indirectly as a mirror row.
+      return primary ? [primary, ...mirrorRecords(link)] : [];
+    })
     .filter((record): record is LinkRecord => record !== null)
     .filter(record => {
       const key = `${record.line_index_1}|${record.line_index_2}|${record.path_2}`;

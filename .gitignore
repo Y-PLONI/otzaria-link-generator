@@ -44,3 +44,6 @@ qa/single-word-dh*
 # Profiler output
 __prof_now/
 *.cpuprofile
+
+# Python QA/extraction tooling
+__pycache__/

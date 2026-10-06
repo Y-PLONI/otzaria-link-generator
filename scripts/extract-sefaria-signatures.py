@@ -3,10 +3,10 @@ Format and purpose: docs/DOUBLE_LINKS_AND_REVERSE_EXPORT.md, section 9.1."""
 import json
 import os
 import re
-import sqlite3
 import sys
+import unicodedata
 
-import zstandard
+from library_db import open_library
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB = os.environ.get('OTZARIA_DB') or os.path.join(os.environ.get('APPDATA', ''), 'otzaria', 'books', 'seforim.db')
@@ -21,7 +21,6 @@ HEADER_HTML_ANY = re.compile(r'<h[1-6][^>]*>.*</h[1-6]>', re.I)
 HEADER_MD = re.compile(r'^(#{1,6})\s+(.*)')
 MARKUP_RUN = re.compile(r'(?:<[^>]*>)+')
 BR = re.compile(r'<\s*br\b[^>]*>', re.I)
-LETTER = re.compile('[א-ת]')
 
 
 def strip_markup(text):
@@ -31,15 +30,33 @@ def strip_markup(text):
     return re.sub(r'[^\S\n]{2,}', ' ', stripped).strip()
 
 
+def normalized(text):
+    text = re.sub(r'<[^>]*>', '', text)
+    text = unicodedata.normalize('NFD', text)
+    text = re.sub(r'[\u0591-\u05c7\u200e\u200f\u202a-\u202e\u2066-\u2069]', '', text)
+    text = ''.join(ch for ch in text if unicodedata.category(ch)[0] in 'LN' or ch in '.:' or ch.isspace())
+    return re.sub(r'\s+', ' ', text).strip()
+
+
 def signature(line):
     trimmed = line.strip()
     if HEADER_HTML_ANY.search(trimmed):
         m = HEADER_HTML.search(trimmed)
-        return f'{m.group(1)}:{strip_markup(m.group(2))}'
+        return f'H{m.group(1)}:{normalized(strip_markup(m.group(2)))}'
     m = HEADER_MD.match(trimmed)
     if m:
-        return f'{len(m.group(1))}:{strip_markup(m.group(2))}'
-    return len(LETTER.findall(MARKUP_RUN.sub('', line)))
+        return f'H{len(m.group(1))}:{normalized(strip_markup(m.group(2)))}'
+    return 'L' + normalized(strip_markup(line))
+
+
+def signature_hash(signatures):
+    first, second = 0x811c9dc5, 0x9e3779b9
+    raw = '\n'.join(signatures).encode('utf-16-le', errors='surrogatepass')
+    for offset in range(0, len(raw), 2):
+        ch = raw[offset] | (raw[offset + 1] << 8)
+        first = ((first ^ ch) * 0x01000193) & 0xffffffff
+        second = ((second ^ ch) * 0x85ebca6b) & 0xffffffff
+    return f'{first:08x}{second:08x}'
 
 
 def read_array(name):
@@ -59,32 +76,26 @@ def main():
     if not os.path.exists(DB):
         sys.exit(f'library database not found at {DB}; set OTZARIA_DB')
     shas, tanakh, halacha = read_array('SHAS_TRACTATES'), read_array('TANAKH_BOOKS'), read_array('HALACHA_BOOKS')
-    titles = [RASHI + t for t in shas + tanakh] + [TOSAFOT + t for t in shas] + halacha + commentator_titles()
+    titles = shas + tanakh + [RASHI + t for t in shas + tanakh] + [TOSAFOT + t for t in shas] + halacha + commentator_titles()
 
-    db = sqlite3.connect(f'file:{DB}?mode=ro', uri=True)
-    dicts = {}
-    for _, blob in db.execute('SELECT id, dict FROM zstd_dict'):
-        d = zstandard.ZstdCompressionDict(blob)
-        dicts[d.dict_id()] = zstandard.ZstdDecompressor(dict_data=d)
-    plain = zstandard.ZstdDecompressor()
-
-    def decode(content):
-        if isinstance(content, str):
-            return content
-        dict_id = zstandard.get_frame_parameters(content).dict_id
-        return (dicts[dict_id] if dict_id else plain).decompress(content, max_output_size=10_000_000).decode('utf-8')
+    db, read_lines = open_library(DB)
 
     out = {}
+    ref_signatures = {}
     for title in titles:
         book = db.execute('SELECT id FROM book WHERE title = ?', (title,)).fetchone()
         if not book:
             continue
-        rows = db.execute('SELECT c.content FROM line l JOIN line_content c ON c.id = l.id '
-                          'WHERE l.bookId = ? ORDER BY l.lineIndex', (book[0],)).fetchall()
-        out[title] = [signature(decode(content)) for (content,) in rows]
+        lines = read_lines(book[0])
+        refs = [row[0] or '' for row in db.execute('SELECT heRef FROM line WHERE bookId = ? ORDER BY lineIndex', (book[0],))]
+        if len(lines) != len(refs):
+            sys.exit(f'{title}: content/reference line count mismatch')
+        out[title] = [signature(line) for line in lines]
+        ref_signatures[title] = signature_hash(refs)
+    db.close()
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with open(OUT, 'w', encoding='utf-8', newline='\n') as fh:
-        json.dump(out, fh, ensure_ascii=False)
+        json.dump({'version': 2, 'books': out, 'refSignatures': ref_signatures}, fh, ensure_ascii=False)
     print(f'{len(out)} books, {sum(len(v) for v in out.values())} lines -> {os.path.relpath(OUT, ROOT)}')
 
 

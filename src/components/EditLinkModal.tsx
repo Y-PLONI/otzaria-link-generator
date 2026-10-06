@@ -1,7 +1,8 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { OtzariaLink } from '../types';
 import { X, Check, Trash2, ArrowLeftRight, Search, CheckCircle2, Layers, BookOpen, Bookmark, Filter, ChevronDown } from 'lucide-react';
-import { parseDocumentSegments, findMatchingSegment } from '../utils/parserAlgorithm';
+import { parseDocumentSegments } from '../utils/parserAlgorithm';
+import { manualSegmentRanges, manualMatchingSegment } from '../utils/manualMatch';
 import { SourceProfile } from '../utils/halachaAlgorithm';
 import { normalizeForSearch } from '../utils/searchNormalize';
 
@@ -69,11 +70,9 @@ export const EditLinkModal: React.FC<EditLinkModalProps> = ({
   const listRef = useRef<HTMLDivElement>(null);
 
   // 1. Find segment for current commentary line
-  const commSeg = useMemo(() => {
-    if (!commentaryLines || commentaryLines.length === 0) return null;
-    const { segments } = parseDocumentSegments(commentaryLines.join('\n'), profile);
-    return segments.find(s => commLineIndex >= s.startLine && commLineIndex <= s.endLine) || null;
-  }, [commentaryLines, commLineIndex, profile]);
+  const commSegments = useMemo(() => parseDocumentSegments(commentaryLines.join('\n'), profile).segments,
+    [commentaryLines, profile]);
+  const commSeg = commSegments.find(segment => commLineIndex >= segment.startLine && commLineIndex <= segment.endLine) ?? null;
 
   // 2. Parse segments for source books
   const primarySegments = useMemo(() => {
@@ -99,21 +98,19 @@ export const EditLinkModal: React.FC<EditLinkModalProps> = ({
 
   // 3. Current tab segments
   const currentTabSegments = useMemo(() => {
-    if (activeTab === 'primary') return primarySegments;
-    if (activeTab === 'rashi') return rashiSegments;
-    if (activeTab === 'tosafot') return tosafotSegments;
-    return otherSegments;
-  }, [activeTab, primarySegments, rashiSegments, tosafotSegments, otherSegments]);
+    const segments = activeTab === 'primary' ? primarySegments : activeTab === 'rashi'
+      ? rashiSegments : activeTab === 'tosafot' ? tosafotSegments : otherSegments;
+    return manualSegmentRanges(segments, profile);
+  }, [activeTab, primarySegments, rashiSegments, tosafotSegments, otherSegments, profile]);
 
-  // 4. Find matching segment index in active tab
+  // Use the containing siman, rather than the first matching סעיף elsewhere in the book.
   const matchingSegIndex = useMemo(() => {
-    if (!commSeg || currentTabSegments.length === 0) return -1;
-    const match = findMatchingSegment(currentTabSegments, commSeg.headerTitle);
-    return match ? currentTabSegments.indexOf(match) : -1;
-  }, [commSeg, currentTabSegments]);
+    const match = manualMatchingSegment(currentTabSegments, commSegments, commLineIndex, profile);
+    return match ? currentTabSegments.findIndex(segment => segment.startLine === match.startLine) : -1;
+  }, [commSegments, commLineIndex, currentTabSegments, profile]);
 
   // 5. Selected segment filter state
-  const [selectedSegIndex, setSelectedSegIndex] = useState<number | 'all'>('all');
+  const [selectedSegIndex, setSelectedSegIndex] = useState<number | 'all'>(matchingSegIndex >= 0 ? matchingSegIndex : 'all');
 
   // Sync selected segment whenever activeTab or matchingSegIndex changes
   useEffect(() => {
