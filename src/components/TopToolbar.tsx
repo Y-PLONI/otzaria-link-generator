@@ -5,7 +5,7 @@ import { SessionState, OtzariaLink } from '../types';
 import { formatLineWithDH, parseDocumentSegments, normalizeText, findMatchingSegment, isLinkableContentLine, findFirstAlignedSegmentIndex } from '../utils/parserAlgorithm';
 import { profileForConfig } from '../utils/halachaAlgorithm';
 import { mirrorGemaraLine, hasMirrorData } from '../utils/shasMirror';
-import { sefariaRefFor, isSefariaOwnedTarget, isSefariaOwnedCommentary, titleOfPath } from '../utils/sefariaRefs';
+import { resolveSefariaRef, isSefariaOwnedTarget, isSefariaOwnedCommentary, titleOfPath } from '../utils/sefariaRefs';
 import { getWordSimilarity } from '../utils/fuzzyUtils';
 import { calculateDocumentIdfWeights, getCombinedWordWeight } from '../utils/wordWeights';
 import { notifySuccess, notifyError } from '../utils/otzariaBridge';
@@ -47,15 +47,9 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
     try {
       const zip = new JSZip();
 
-      /**
-       * A book title as a file name. Gershayim are dropped rather than replaced, so
-       * `רש"י על ברכות` becomes `רשי על ברכות` instead of `רש_י על ברכות`; the remaining
-       * characters Windows rejects in a name become underscores.
-       */
-      const safeFileName = (name: string) =>
-        name.replace(/"/g, '').replace(/[/\\?%*:|<>]/g, '_').trim();
-
-      const cleanFileName = safeFileName(session.commentaryTitle);
+      // Entries keep the exact title: the library loads a links file only by the book's exact name.
+      const entryName = session.commentaryTitle.replace(/[/\\\u0000-\u001f]/g, '').trim();
+      const windowsUnsafeName = /[":*?<>|]/.test(entryName);
 
       // The engine's own segmentation, for the unlinked-lines report below. parseDocumentSegments is
       // pure and idempotent on already-parsed session lines.
@@ -69,15 +63,15 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
       // line_index_1. "source" declares the target as this commentary's base; the library stores it
       // as base → commentary, so no reverse files are needed. A Sefaria-owned target must carry
       // ref_2 (src/utils/sefariaRefs.ts), any other target must not.
-      let missingRefs = 0;
-      const linkRecord = (lineIndex1: number, lineIndex2: number, heRef2: string, path2: string, targetLines?: string[]) => {
+      const misses = { header: 0, changed: 0, unaddressed: 0, mirror: 0 };
+      const linkRecord = (lineIndex1: number, lineIndex2: number, heRef2: string, path2: string, targetLines?: string[], isMirror = false) => {
         const title = titleOfPath(path2);
         if (!isSefariaOwnedTarget(title)) {
           return { line_index_1: lineIndex1, line_index_2: lineIndex2, heRef_2: heRef2, path_2: path2, 'Conection Type': 'source' };
         }
-        const sefaria = sefariaRefFor(title, lineIndex2, targetLines);
-        if (!sefaria) {
-          missingRefs++;
+        const sefaria = resolveSefariaRef(title, lineIndex2, targetLines);
+        if (typeof sefaria === 'string') {
+          misses[isMirror ? 'mirror' : sefaria]++;
           return null;
         }
         return {
@@ -106,18 +100,25 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
         if (!withMirror || (series !== 'rashi' && series !== 'tosafot')) return null;
         // Coverage is whatever the library's own links cover — a miss is a row to skip.
         const gemaraLine = mirrorGemaraLine(tractate, series, link.line_index_2);
-        return gemaraLine ? linkRecord(link.line_index_1, gemaraLine, tractate, `${tractate}.txt`, session.sourceLines) : null;
+        return gemaraLine ? linkRecord(link.line_index_1, gemaraLine, tractate, `${tractate}.txt`, session.sourceLines, true) : null;
       };
 
-      const exportedLinks = session.links
+      const linkRecords = session.links
         .flatMap(link => [
           linkRecord(link.line_index_1, link.line_index_2, link.heRef_2, link.path_2, targetLinesOf(link)),
           mirrorRecord(link)
         ])
         .filter(record => record !== null);
+      const seen = new Set<string>();
+      const exportedLinks = linkRecords.filter(record => {
+        const key = `${record.line_index_1}|${record.line_index_2}|${record.path_2}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
 
       // The library rejects a BOM, CR, and more than one trailing LF.
-      zip.file(`${cleanFileName}_links.json`, JSON.stringify(exportedLinks, null, 2) + '\n');
+      zip.file(`${entryName}_links.json`, JSON.stringify(exportedLinks, null, 2) + '\n');
 
       // 2. Generate _links.csv — the same rows, for reading in a spreadsheet
       const csvHeaders = ['line_index_1', 'line_index_2', 'heRef_2', 'ref_2', 'path_2', 'Conection Type'];
@@ -135,7 +136,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
         .join(','));
 
       const csvContent = '\uFEFF' + [csvHeaders.join(','), ...csvRows].join('\r\n');
-      zip.file(`${cleanFileName}_links.csv`, csvContent);
+      zip.file(`${entryName}_links.csv`, csvContent);
 
       // 3. Generate analysis CSV with DH, source word comparisons and score details
       const analysisHeaders = [
@@ -210,7 +211,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
       });
 
       const analysisContent = '\uFEFF' + [analysisHeaders.join(','), ...analysisRows].join('\r\n');
-      zip.file(`${cleanFileName}_analysis.csv`, analysisContent);
+      zip.file(`${entryName}_analysis.csv`, analysisContent);
 
       // 3. Generate updated commentary .txt file with <b>...</b> tags
       const updatedLines = session.commentaryLines.map((line, idx) => {
@@ -224,7 +225,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
 
       // Join strictly with physical newlines (\n) - NO <br> tags!
       const txtContent = updatedLines.join('\n');
-      zip.file(`${cleanFileName}.txt`, txtContent);
+      zip.file(`${entryName}.txt`, txtContent);
 
       // 4. Generate unlinked lines folder
       const linkedLineIndices = new Set(session.links.map(l => l.line_index_1));
@@ -288,19 +289,29 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${cleanFileName}_package.zip`;
+      a.download = `${entryName.replace(/[":*?<>|]/g, '_')}_package.zip`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
-      if (missingRefs > 0) {
-        notifyError(`${missingRefs} קישורים לא יוצאו: לא נמצאה להם הפניית ספריא (ref_2), כנראה שגרסת ספר היעד שונה מזו שהתוסף מכיר`);
-      }
+      const warnings: string[] = [];
+      if (misses.changed) warnings.push(`${misses.changed} קישורים לא יוצאו כי הקטע שלהם בספר היעד שונה בספרייה, והפניית ספריא שלהם אינה ודאית`);
+      if (misses.unaddressed) warnings.push(`${misses.unaddressed} קישורים לא יוצאו כי לשורת היעד שלהם אין הפניה בספריא`);
+      if (misses.mirror) warnings.push(`${misses.mirror} קישורי מראה לגמרא לא יוצאו כי לשורת הגמרא אין הפניה בספריא`);
+      if (misses.header) warnings.push(`${misses.header} קישורים לשורת כותרת לא יוצאו (הספרייה מדלגת עליהם בכל מקרה)`);
       if (isSefariaOwnedCommentary(session.commentaryTitle)) {
-        notifyError(`שימו לב: "${session.commentaryTitle}" קיים בספריא, וקישורים ממנו דורשים ref_1 שהתוסף אינו מייצא — הקובץ עלול להידחות בסנכרון של הספרייה`);
+        warnings.push(`"${session.commentaryTitle}" קיים בספריא, וקישורים ממנו דורשים ref_1 שהתוסף אינו מייצא — הסנכרון של הספרייה עלול לדחות את הקובץ`);
       }
-      notifySuccess('קובץ ZIP (כולל TXT, JSON ו-CSV) ייוצא בהצלחה!');
+      if (windowsUnsafeName) {
+        warnings.push('שם הספר מכיל תו שאסור בשמות קבצים ב-Windows: בעת העלאה לספרייה יש לשמור את שמות הקבצים שב-ZIP כמו שהם, כי הקישורים נטענים רק לפי שם הספר המדויק');
+      }
+      // One message: Otzaria shows one at a time, so a second would replace the first.
+      if (warnings.length) {
+        notifyError(`קובץ ה-ZIP יוצא, אבל: ${warnings.join('; ')}`);
+      } else {
+        notifySuccess('קובץ ZIP (כולל TXT, JSON ו-CSV) ייוצא בהצלחה!');
+      }
     } catch (e) {
       console.error(e);
       notifyError('אירעה שגיאה ביצירת קובץ ה-ZIP');

@@ -11,10 +11,13 @@
  *   - data/sefaria/sefaria_he_titles.txt and data/sefaria/sefaria_ref_prefixes.tsv, the
  *     snapshots otzaria-library validates links against:
  *       gh api repos/Otzaria/otzaria-library/contents/.github/data/<name> -H "Accept: application/vnd.github.raw"
+ *   - data/sefaria/line-signatures.json, from `python scripts/extract-sefaria-signatures.py`.
  * When any is missing this script keeps the committed table and exits 0, like the mirror table.
  *
  * ── Encoding ────────────────────────────────────────────────────────────────────────────────
- * Per book, one string of tokens walking its lines from line 1. An address is a list of numbers
+ * Per book, one string of tokens walking its lines from line 1, cut into segments: line 1 and
+ * every header line open one, marked `|hhh` with the checksum of its text (segmentHash in
+ * src/utils/sefariaRefs.ts), so a reader can tell which segments still match the library. An address is a list of numbers
  * (a daf is stored as its amud: 2a = 3, 2b = 4); every token is relative to the previous one:
  *   .n      n lines with no address (n in base36, default 1)
  *   +n      n lines, each the previous address with its last number + 1
@@ -34,8 +37,9 @@ const DB = process.env.OTZARIA_DB
   || path.join(os.homedir(), 'AppData', 'Roaming', 'otzaria', 'books', 'seforim.db');
 const titlesFile = path.join(projectRoot, 'data', 'sefaria', 'sefaria_he_titles.txt');
 const prefixesFile = path.join(projectRoot, 'data', 'sefaria', 'sefaria_ref_prefixes.tsv');
+const signaturesFile = path.join(projectRoot, 'data', 'sefaria', 'line-signatures.json');
 
-const missingInputs = [DB, titlesFile, prefixesFile].filter(f => !fs.existsSync(f));
+const missingInputs = [DB, titlesFile, prefixesFile, signaturesFile].filter(f => !fs.existsSync(f));
 if (missingInputs.length) {
   const verb = fs.existsSync(outFile) ? 'keeping the committed table' : 'NO TABLE WILL EXIST';
   console.warn(`sefaria-refs: missing ${missingInputs.join(', ')} — ${verb}.`);
@@ -82,6 +86,7 @@ const GEMARA_EN = readMap(refsFile, 'GEMARA_EN');
 const TANAKH_EN = readMap(refsFile, 'TANAKH_EN');
 
 const heTitles = new Set(fs.readFileSync(titlesFile, 'utf8').split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#')));
+const signatures = JSON.parse(fs.readFileSync(signaturesFile, 'utf8'));
 const prefixes = new Map();
 for (const line of fs.readFileSync(prefixesFile, 'utf8').split('\n')) {
   if (!line || line.startsWith('#')) continue;
@@ -137,18 +142,39 @@ function parseAddress(parts, isDaf) {
 
 const b36 = n => n.toString(36);
 
-function encode(lines) {
+/** Mirrors lineSignature + segmentHash in src/utils/sefariaRefs.ts, over the extracted signatures. */
+const signatureOf = sig => (typeof sig === 'number' ? 'L' + sig : 'H' + sig.slice(sig.indexOf(':') + 1).replace(/[^\u05d0-\u05ea.:]/g, ''));
+function segmentHash(signatures) {
+  let h = 0x811c9dc5;
+  const text = signatures.join(',');
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return ((h >>> 0) % 46656).toString(36).padStart(3, '0');
+}
+
+/** `segments`: [{ start, hash }] — each segment's tokens follow its `|hash`, and no run crosses it. */
+function encode(lines, segments) {
   const out = [];
+  const hashAt = new Map(segments.map(seg => [seg.start, seg.hash]));
+  const ends = [...segments.slice(1).map(seg => seg.start), lines.length];
+  let segment = -1;
   let prev = null;
   let node = 0;
   let i = 0;
   const isNext = (a, p) => p && a && a.node === node && a.address.length === p.length
     && a.address.slice(0, -1).every((v, j) => v === p[j]) && a.address[p.length - 1] === p[p.length - 1] + 1;
   while (i < lines.length) {
+    if (hashAt.has(i)) {
+      out.push('|' + hashAt.get(i));
+      segment++;
+    }
+    const end = ends[segment];
     const cur = lines[i];
     if (!cur) {
       let j = i;
-      while (j < lines.length && !lines[j]) j++;
+      while (j < end && !lines[j]) j++;
       out.push('.' + (j - i > 1 ? b36(j - i) : ''));
       i = j;
       continue;
@@ -161,7 +187,7 @@ function encode(lines) {
     if (isNext(cur, prev)) {
       let j = i;
       let p = prev;
-      while (j < lines.length && isNext(lines[j], p)) { p = lines[j].address; j++; }
+      while (j < end && isNext(lines[j], p)) { p = lines[j].address; j++; }
       out.push('+' + (j - i > 1 ? b36(j - i) : ''));
       prev = p;
       i = j;
@@ -193,10 +219,12 @@ function encode(lines) {
 /** Mirror of decodeBaked in src/utils/sefariaRefs.ts, used only to self-check the output. */
 function decode(refs) {
   const out = [];
+  const segments = [];
   let node = 0;
   let prev = null;
   const emit = address => { out.push({ node, address }); prev = address; };
-  for (const [, op, arg] of refs.matchAll(/([.+=#]|\^+|[A-Z])([0-9a-z:]*)/g)) {
+  for (const [, op, arg] of refs.matchAll(/([.+=#|]|\^+|[A-Z])([0-9a-z:]*)/g)) {
+    if (op === '|') { segments.push({ start: out.length, hash: arg }); continue; }
     const values = arg ? arg.split(':').map(v => parseInt(v, 36)) : [];
     if (op === '.') for (let i = 0; i < (values[0] || 1); i++) out.push(null);
     else if (op === '#') { node = values[0]; prev = null; }
@@ -212,7 +240,7 @@ function decode(refs) {
       emit(n);
     }
   }
-  return out;
+  return { lines: out, segments };
 }
 
 const db = new DatabaseSync(DB, { readOnly: true });
@@ -258,6 +286,19 @@ for (const book of books) {
     if (!address) { errors.push(`${book.title}: cannot parse heRef ${heRef}`); return null; }
     return { node, address };
   });
+  const sigs = signatures[book.title];
+  if (!sigs || sigs.length !== rows.length) {
+    errors.push(`${book.title}: line-signatures.json is stale (re-run extract-sefaria-signatures.py)`);
+    continue;
+  }
+  const starts = sigs.map((sig, i) => (i === 0 || typeof sig === 'string' ? i : -1)).filter(i => i >= 0);
+  const segments = starts.map((start, k) => ({
+    start,
+    hash: segmentHash(sigs.slice(start, starts[k + 1] ?? sigs.length).map(signatureOf)),
+  }));
+  sigs.forEach((sig, i) => {
+    if (typeof sig === 'string' && lines[i]) errors.push(`${book.title}: header line ${i + 1} has a heRef`);
+  });
   const depths = new Map();
   for (const l of lines) {
     if (!l) continue;
@@ -265,14 +306,14 @@ for (const book of books) {
     depths.set(l.node, l.address.length);
   }
 
-  const refs = encode(lines);
-  const roundTrip = decode(refs);
-  while (roundTrip.length < lines.length) roundTrip.push(null);
-  if (roundTrip.length !== lines.length || lines.some((l, i) => JSON.stringify(l) !== JSON.stringify(roundTrip[i]))) {
+  const refs = encode(lines, segments);
+  const { lines: roundTrip, segments: roundSegments } = decode(refs);
+  if (roundTrip.length !== lines.length || lines.some((l, i) => JSON.stringify(l) !== JSON.stringify(roundTrip[i]))
+    || JSON.stringify(roundSegments) !== JSON.stringify(segments)) {
     throw new Error(`${book.title}: round-trip mismatch`);
   }
   const nodes = book.nodes.map(([name, en]) => [en, name ? `${book.title}, ${name} ` : `${book.title} `, book.isDaf ? 1 : 0]);
-  table.push({ title: book.title, lines: rows.length, nodes, refs });
+  table.push({ title: book.title, nodes, refs });
   totalLines += rows.length;
   totalRefs += lines.filter(Boolean).length;
 }
@@ -297,7 +338,7 @@ if (errors.length) {
 }
 
 const entries = table
-  .map(b => `  ${JSON.stringify(b.title)}: {\n    lines: ${b.lines},\n    nodes: ${JSON.stringify(b.nodes)},\n    refs: ${JSON.stringify(b.refs)},\n  },`)
+  .map(b => `  ${JSON.stringify(b.title)}: {\n    nodes: ${JSON.stringify(b.nodes)},\n    refs: ${JSON.stringify(b.refs)},\n  },`)
   .join('\n');
 const commentatorEntries = [...commentators]
   .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
@@ -314,8 +355,6 @@ const output = `/**
  * generator's header for the encoding.
  */
 export const SEFARIA_REF_TABLE: Record<string, {
-  /** line count of the library version the table was built from */
-  lines: number;
   /** per node: [English ref prefix, Hebrew heRef prefix, 1 when the first number is a daf] */
   nodes: [string, string, number][];
   refs: string;

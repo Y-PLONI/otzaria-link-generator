@@ -7,7 +7,8 @@
  * 2. Ground truth: every ref_2 in real links files of otzaria-library (DictaToOtzaria), re-derived
  *    from path_2 + line_index_2. Set DICTA_LINKS_DIR to a folder of *_links.json; skipped otherwise.
  * 3. Every line of every supported target in the local library, against its own heRef. Needs
- *    the library database (OTZARIA_DB overrides the default location); skipped otherwise.
+ *    the library database (OTZARIA_DB overrides the default location); commentaries also need
+ *    data/sefaria/line-signatures.json (scripts/extract-sefaria-signatures.py). Skipped otherwise.
  * 4. Every ref produced by 2 and 3 has the shape otzaria-library's validate_manual_links_refs.py
  *    accepts. Needs data/sefaria/sefaria_ref_prefixes.tsv (SEFARIA_PREFIXES overrides); and every
  *    supported target is in data/sefaria/sefaria_he_titles.txt (SEFARIA_HE_TITLES overrides).
@@ -17,8 +18,9 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   sefariaRefFor, isSefariaOwnedTarget, isSefariaOwnedCommentary, titleOfPath,
-  hebrewToNumber, numberToHebrew, GEMARA_EN, TANAKH_EN
+  hebrewToNumber, numberToHebrew, GEMARA_EN, TANAKH_EN, resolveBakedRef, segmentHash, lineSignature
 } from '../src/utils/sefariaRefs';
+import type { BakedBook } from '../src/utils/sefariaRefs';
 import { SEFARIA_REF_TABLE } from '../src/data/sefariaRefTable';
 
 let failures = 0;
@@ -49,16 +51,31 @@ const tanakhText = [`<h1>${GENESIS}</h1>`, '<h2>פרק א</h2>', 'x', 'x', '<h2>
 eq('tanakh: chapter and verse', sefariaRefFor(GENESIS, 4, tanakhText)?.ref, 'Genesis 1:2');
 eq('tanakh: next chapter', sefariaRefFor(GENESIS, 6, tanakhText)?.ref, 'Genesis 2:1');
 
-const lineCount = (title: string) => SEFARIA_REF_TABLE[title]?.lines ?? 0;
-const fakeText = (title: string) => new Array(lineCount(title)).fill('x');
-eq('rashi: baked address', sefariaRefFor(RASHI_BERAKHOT, 4, fakeText(RASHI_BERAKHOT))?.ref, 'Rashi on Berakhot 2a:1:1');
-eq('rashi: next segment', sefariaRefFor(RASHI_BERAKHOT, 6)?.ref, 'Rashi on Berakhot 2a:3:1');
-eq('rashi: heRef', sefariaRefFor(RASHI_BERAKHOT, 6)?.heRef, `${RASHI_BERAKHOT} ב., ג, א`);
-eq('rashi: a trailing newline is not another version', sefariaRefFor(RASHI_BERAKHOT, 4, [...fakeText(RASHI_BERAKHOT), ''])?.ref, 'Rashi on Berakhot 2a:1:1');
-eq('rashi: another version of the text gets no ref', sefariaRefFor(RASHI_BERAKHOT, 4, ['x', 'x', 'x', 'x']), undefined);
-eq('tosafot: baked address', sefariaRefFor(TOSAFOT_BERAKHOT, 5)?.ref, 'Tosafot on Berakhot 2a:7:1');
-eq('halacha: siman and seif', sefariaRefFor(SA_OC, 5)?.ref, 'Shulchan Arukh, Orach Chayim 1:1');
-eq('halacha: the topic line under a siman has no ref', sefariaRefFor(SA_OC, 4), undefined);
+// A synthetic baked book: segments [h1], [daf 2a + 2 lines], [daf 2b + 2 lines].
+const bakedText = ['<h1>T</h1>', '<h2>\u05d3\u05e3 \u05d1.</h2>', '\u05d0\u05d1', '\u05d2\u05d3\u05d4', '<h2>\u05d3\u05e3 \u05d1:</h2>', '\u05d5', '\u05d6\u05d7'];
+const hashOf = (from: number, to: number) => segmentHash(bakedText.slice(from, to).map(lineSignature));
+const baked: BakedBook = {
+  nodes: [['Rashi on X ', 'X ', 1]],
+  refs: `|${hashOf(0, 1)}.|${hashOf(1, 4)}.=3:1:1+|${hashOf(4, 7)}.^^1:2A`
+};
+const refOf = (line: number, lines: string[]) => {
+  const r = resolveBakedRef(baked, line, lines);
+  return typeof r === 'string' ? r : r.ref;
+};
+eq('baked: addresses of an unchanged text', [3, 4, 6, 7].map(l => refOf(l, bakedText)),
+  ['Rashi on X 2a:1:1', 'Rashi on X 2a:1:2', 'Rashi on X 2b:2:1', 'Rashi on X 2b:3:1']);
+eq('baked: a header line', refOf(2, bakedText), 'header');
+eq('baked: nikud, markup and a trailing newline change nothing',
+  refOf(7, [...bakedText.slice(0, 6), '<b>\u05d6\u05b8\u05d7</b> ', '']), 'Rashi on X 2b:3:1');
+const added = [...bakedText.slice(0, 6), '\u05d8', ...bakedText.slice(6)];
+eq('baked: a line added to one segment drops only that segment', [3, 4, 6, 7, 8].map(l => refOf(l, added)),
+  ['Rashi on X 2a:1:1', 'Rashi on X 2a:1:2', 'changed', 'changed', 'changed']);
+const replaced = [...bakedText.slice(0, 2), '\u05d0\u05d1\u05d2', ...bakedText.slice(3)];
+eq('baked: a line replaced at the same line count is detected', [3, 4, 6].map(l => refOf(l, replaced)),
+  ['changed', 'changed', 'Rashi on X 2b:2:1']);
+const inserted = [bakedText[0], '<h2>\u05d3\u05e3 \u05d0:</h2>', '\u05d9', ...bakedText.slice(1)];
+eq('baked: a new segment shifts the rest without losing it', [3, 5, 9].map(l => refOf(l, inserted)),
+  ['changed', 'Rashi on X 2a:1:1', 'Rashi on X 2b:3:1']);
 
 eq('numerals round-trip 1..1000', Array.from({ length: 1000 }, (_, i) => i + 1).filter(n => hebrewToNumber(numberToHebrew(n)) !== n), []);
 eq('15 and 16 avoid the divine name', [numberToHebrew(15), numberToHebrew(16)], ['טו', 'טז']);
@@ -78,7 +95,14 @@ if (fs.existsSync(DB_PATH)) {
 }
 
 /** A target's lines as the plugin would load them, as far as ref derivation can tell: header lines
- *  come back from the table of contents (verified identical to the stored text), others are 'x'. */
+ *  come back from the table of contents (verified identical to the stored text), others are 'x';
+ *  a baked book's lines are rebuilt from its extracted signatures. */
+const SIGNATURES = path.join('data', 'sefaria', 'line-signatures.json');
+const signatures: Record<string, (string | number)[]> | null =
+  fs.existsSync(SIGNATURES) ? JSON.parse(fs.readFileSync(SIGNATURES, 'utf8')) : null;
+const fromSignature = (sig: string | number) => typeof sig === 'number'
+  ? (sig ? '\u05d0'.repeat(sig) : '-')
+  : `<h${sig.slice(0, sig.indexOf(':'))}>${sig.slice(sig.indexOf(':') + 1)}</h${sig.slice(0, sig.indexOf(':'))}>`;
 const skeletonCache = new Map<string, { lines: string[]; heRefs: (string | null)[] } | null>();
 function libraryBook(title: string) {
   if (!db) return null;
@@ -87,8 +111,13 @@ function libraryBook(title: string) {
   let result = null;
   if (book) {
     const rows = db.prepare('SELECT lineIndex, heRef FROM line WHERE bookId = ? ORDER BY lineIndex').all(book.id);
-    const lines = rows.map(() => 'x');
-    for (const t of db.prepare(`SELECT l.lineIndex, t.level, x.text FROM tocEntry t
+    const baked = title in SEFARIA_REF_TABLE;
+    const lines = baked ? signatures?.[title]?.map(fromSignature) : rows.map(() => 'x');
+    if (!lines || lines.length !== rows.length) {
+      skeletonCache.set(title, null);
+      return null;
+    }
+    if (!baked) for (const t of db.prepare(`SELECT l.lineIndex, t.level, x.text FROM tocEntry t
         JOIN tocText x ON x.id = t.textId JOIN line l ON l.id = t.lineId WHERE t.bookId = ?`).all(book.id)) {
       lines[t.lineIndex] = `<h${t.level + 1}>${t.text}</h${t.level + 1}>`;
     }
@@ -112,9 +141,8 @@ if (!dictaDir || !fs.existsSync(dictaDir)) {
       const title = titleOfPath(String(rec.path_2 ?? ''));
       if (!isSefariaOwnedTarget(title)) { unsupported++; continue; }
       if (!rec.ref_2) { ownedWithoutRef++; continue; }
-      const base = title in GEMARA_EN || title in TANAKH_EN;
-      const text = base ? libraryBook(title)?.lines : undefined;
-      if (base && !text) { noText++; continue; }
+      const text = libraryBook(title)?.lines;
+      if (!text) { noText++; continue; }
       const got = sefariaRefFor(title, Math.round(Number(rec.line_index_2)), text)?.ref;
       compared++;
       if (got === rec.ref_2) matched++;
@@ -175,7 +203,7 @@ if (!db) {
   const misses: string[] = [];
   for (const title of targets) {
     const book = libraryBook(title);
-    if (!book) { console.log(`INFO  library sweep: ${ascii(title)} is not in this library`); continue; }
+    if (!book) { console.log(`INFO  library sweep: ${ascii(title)} has no text here (not in this library, or no line-signatures.json)`); continue; }
     books++;
     const isDaf = title in GEMARA_EN || Object.keys(GEMARA_EN).some(t => title === RASHI + t || title === TOSAFOT + t);
     book.heRefs.forEach((heRef, i) => {

@@ -14,7 +14,8 @@ import { isHeaderLine, extractHeaderTitle } from './parserAlgorithm';
  * Commentaries are not — the second number of `Rashi on Berakhot 2a:3:1` is the gemara
  * segment the comment belongs to, which the Rashi text does not state — so their addresses
  * are read from the library's own heRef column into src/data/sefariaRefTable.ts by
- * scripts/generate-sefaria-refs.mjs.
+ * scripts/generate-sefaria-refs.mjs. The table is anchored per segment (a header and the lines
+ * under it) by a checksum of the text, so a later edit of the library drops only what it changed.
  */
 
 /** Library title of a Bavli tractate -> its Sefaria title. */
@@ -104,7 +105,7 @@ export const TANAKH_EN: Record<string, string> = {
 export interface SefariaRef {
   /** English Sefaria ref, e.g. `Berakhot 2a:1` */
   ref: string;
-  /** The same address in the library's Hebrew notation, e.g. `ברכות ב., א` */
+  /** The same address as the library's links files write heRef_2, e.g. `ברכות ב., א` */
   heRef: string;
 }
 
@@ -165,7 +166,7 @@ function deriveBaseAddresses(lines: string[], isGemara: boolean): (Address | nul
   const out: (Address | null)[] = new Array(lines.length).fill(null);
   let section: number | null = null;
   let offset = 0;
-  lines.forEach((line, i) => {
+  lines.slice(0, contentLength(lines)).forEach((line, i) => {
     if (isHeaderLine(line)) {
       const title = extractHeaderTitle(line).trim();
       const m = title.match(isGemara ? DAF_HEADER_RE : CHAPTER_HEADER_RE);
@@ -182,22 +183,61 @@ function deriveBaseAddresses(lines: string[], isGemara: boolean): (Address | nul
   return out;
 }
 
+type BakedLine = { node: number; address: Address } | null;
+/** One table segment: a header line and the lines up to the next one. */
+interface BakedSegment { hash: string; lines: BakedLine[] }
+export type BakedBook = { nodes: [string, string, number][]; refs: string };
+
+const MARKUP_RE = /<[^>]*>/g;
+const HEBREW_LETTER_RE = /[א-ת]/g;
+
+/**
+ * What a segment's checksum sees of one line: a header's title (letters and . :), or the count
+ * of Hebrew letters — blind to nikud, spacing and markup, so only a change of wording counts.
+ */
+export function lineSignature(line: string): string {
+  if (isHeaderLine(line)) return 'H' + extractHeaderTitle(line).replace(/[^א-ת.:]/g, '');
+  return 'L' + (line.replace(MARKUP_RE, '').match(HEBREW_LETTER_RE)?.length ?? 0);
+}
+
+/** FNV-1a of a segment's line signatures, as 3 base36 digits. Mirrored in the generator. */
+export function segmentHash(signatures: string[]): string {
+  let h = 0x811c9dc5;
+  const text = signatures.join(',');
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return ((h >>> 0) % 46656).toString(36).padStart(3, '0');
+}
+
+/** Segment boundaries: line 0 and every header line. */
+function segmentStarts(lines: string[], length: number): number[] {
+  const starts = [0];
+  for (let i = 1; i < length; i++) if (isHeaderLine(lines[i])) starts.push(i);
+  return starts;
+}
+
 /**
  * Decodes one book of the baked table — see scripts/generate-sefaria-refs.mjs for the grammar.
- * Returns, per 0-based line, the node index and address, or null.
  */
-function decodeBaked(refs: string, lineCount: number): ({ node: number; address: Address } | null)[] {
-  const out: ({ node: number; address: Address } | null)[] = [];
+function decodeBaked(refs: string): BakedSegment[] {
+  const segments: BakedSegment[] = [];
   let node = 0;
   let prev: Address | null = null;
-  const emit = (address: Address) => { out.push({ node, address }); prev = address; };
-  const tokenRe = /([.+=#]|\^+|[A-Z])([0-9a-z:]*)/g;
+  const push = (line: BakedLine) => segments[segments.length - 1].lines.push(line);
+  const emit = (address: Address) => { push({ node, address }); prev = address; };
+  const tokenRe = /([.+=#|]|\^+|[A-Z])([0-9a-z:]*)/g;
   let m: RegExpExecArray | null;
   while ((m = tokenRe.exec(refs))) {
     const [, op, arg] = m;
+    if (op === '|') {
+      segments.push({ hash: arg, lines: [] });
+      continue;
+    }
     const values = arg ? arg.split(':').map(v => parseInt(v, 36)) : [];
     if (op === '.') {
-      for (let i = 0; i < (values[0] || 1); i++) out.push(null);
+      for (let i = 0; i < (values[0] || 1); i++) push(null);
     } else if (op === '#') {
       node = values[0];
       prev = null;
@@ -222,11 +262,48 @@ function decodeBaked(refs: string, lineCount: number): ({ node: number; address:
       emit(next);
     }
   }
-  while (out.length < lineCount) out.push(null);
+  return segments;
+}
+
+/** How far ahead an inserted or removed run of segments may push the match. */
+const ALIGN_WINDOW = 200;
+
+type Resolved = { hit: BakedLine; changed: boolean };
+
+/**
+ * Maps every loaded line to its table address. Segments are matched in order by line count and
+ * checksum, so a library edit costs only the segments it touched — their lines get no address.
+ */
+function alignBaked(table: BakedSegment[], lines: string[]): Resolved[] {
+  const length = contentLength(lines);
+  const out: Resolved[] = new Array(length);
+  const starts = segmentStarts(lines, length);
+  const segs = starts.map((start, s) => {
+    const end = s + 1 < starts.length ? starts[s + 1] : length;
+    return { start, end, hash: segmentHash(lines.slice(start, end).map(lineSignature)) };
+  });
+  const same = (s: number, t: number) =>
+    table[t].hash === segs[s].hash && table[t].lines.length === segs[s].end - segs[s].start;
+  let next = 0;
+  segs.forEach((seg, s) => {
+    let match = -1;
+    for (let t = next; t < Math.min(table.length, next + ALIGN_WINDOW); t++) {
+      // A jump past table segments must be confirmed by the segment after it too.
+      if (same(s, t) && (t === next || s + 1 >= segs.length || t + 1 >= table.length || same(s + 1, t + 1))) {
+        match = t;
+        break;
+      }
+    }
+    if (match >= 0) next = match + 1;
+    for (let i = seg.start; i < seg.end; i++) {
+      out[i] = match >= 0 ? { hit: table[match].lines[i - seg.start], changed: false } : { hit: null, changed: true };
+    }
+  });
   return out;
 }
 
-const bakedCache = new Map<string, ({ node: number; address: Address } | null)[]>();
+const decodedCache = new WeakMap<BakedBook, BakedSegment[]>();
+const alignedCache = new WeakMap<string[], Map<BakedBook, Resolved[]>>();
 
 /** Lines in the text the plugin loaded, ignoring a trailing newline. */
 function contentLength(lines: string[]): number {
@@ -261,34 +338,55 @@ export function isSefariaOwnedCommentary(title: string): boolean {
   return base >= 0 && Boolean(bases) && bases.split(',').some(v => parseInt(v, 36) === base);
 }
 
-/**
- * ref_2 (and a matching Hebrew heRef) of 1-based line `line` of book `title`, or undefined when
- * the line has no Sefaria address — a header, or a commentary text that is not the version
- * the table was built from. `lines` is the target text as the plugin loaded it.
- */
-export function sefariaRefFor(title: string, line: number, lines?: string[]): SefariaRef | undefined {
-  const idx = line - 1;
-  if (idx < 0) return undefined;
+/** Why a line got no ref: a header line, a segment the library has changed, or no Sefaria address. */
+export type SefariaRefMiss = 'header' | 'changed' | 'unaddressed';
 
+/** A baked book's ref for 1-based `line` of `lines`; exported for tests with a synthetic table. */
+export function resolveBakedRef(entry: BakedBook, line: number, lines: string[]): SefariaRef | SefariaRefMiss {
+  const idx = line - 1;
+  if (idx < 0 || idx >= contentLength(lines)) return 'unaddressed';
+  if (isHeaderLine(lines[idx])) return 'header';
+  let table = decodedCache.get(entry);
+  if (!table) {
+    table = decodeBaked(entry.refs);
+    decodedCache.set(entry, table);
+  }
+  let perBook = alignedCache.get(lines);
+  if (!perBook) {
+    perBook = new Map();
+    alignedCache.set(lines, perBook);
+  }
+  let aligned = perBook.get(entry);
+  if (!aligned) {
+    aligned = alignBaked(table, lines);
+    perBook.set(entry, aligned);
+  }
+  const { hit, changed } = aligned[idx];
+  if (changed) return 'changed';
+  if (!hit) return 'unaddressed';
+  const [enPrefix, hePrefix, firstIsAmud] = entry.nodes[hit.node];
+  return formatRef(enPrefix, hePrefix, hit.address, Boolean(firstIsAmud));
+}
+
+/**
+ * ref_2 (and a matching Hebrew heRef) of 1-based line `line` of book `title`, or the reason it
+ * has none. `lines` is the target text as the plugin loaded it.
+ */
+export function resolveSefariaRef(title: string, line: number, lines?: string[]): SefariaRef | SefariaRefMiss {
+  if (!lines) return 'unaddressed';
+  if (line >= 1 && line <= lines.length && isHeaderLine(lines[line - 1])) return 'header';
   const gemara = GEMARA_EN[title];
   const tanakh = TANAKH_EN[title];
   if (gemara || tanakh) {
-    if (!lines) return undefined;
-    const address = deriveBaseAddresses(lines, Boolean(gemara))[idx];
-    return address ? formatRef(`${gemara || tanakh} `, `${title} `, address, Boolean(gemara)) : undefined;
+    const address = deriveBaseAddresses(lines, Boolean(gemara))[line - 1];
+    return address ? formatRef(`${gemara || tanakh} `, `${title} `, address, Boolean(gemara)) : 'unaddressed';
   }
-
   const entry = SEFARIA_REF_TABLE[title];
-  if (!entry) return undefined;
-  // Line numbers of another version of the book would name other comments.
-  if (lines && contentLength(lines) !== entry.lines) return undefined;
-  let decoded = bakedCache.get(title);
-  if (!decoded) {
-    decoded = decodeBaked(entry.refs, entry.lines);
-    bakedCache.set(title, decoded);
-  }
-  const hit = decoded[idx];
-  if (!hit) return undefined;
-  const [enPrefix, hePrefix, firstIsAmud] = entry.nodes[hit.node];
-  return formatRef(enPrefix, hePrefix, hit.address, Boolean(firstIsAmud));
+  return entry ? resolveBakedRef(entry, line, lines) : 'unaddressed';
+}
+
+/** resolveSefariaRef without the reason. */
+export function sefariaRefFor(title: string, line: number, lines?: string[]): SefariaRef | undefined {
+  const result = resolveSefariaRef(title, line, lines);
+  return typeof result === 'string' ? undefined : result;
 }
