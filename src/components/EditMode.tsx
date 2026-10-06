@@ -30,6 +30,12 @@ import { DragRelinkOverlay } from './DragRelinkOverlay';
 import { useDragRelink } from '../hooks/useDragRelink';
 import { buildDragCandidates, parseDropId } from '../utils/dragCandidates';
 import {
+  RENDER_WINDOW_SIZE,
+  clampWindowStart,
+  shiftWindowStart,
+  windowStartToReveal
+} from '../utils/renderWindow';
+import {
   buildInheritanceIndex,
   cascadeInheritedContext,
   markLineAsInherited,
@@ -89,14 +95,12 @@ const CollapsibleText = React.memo(({ text, isPrimary, links, targetType }: { te
   
   if (links && links.length > 0) {
     const words = text.split(/(\s+)/);
-    const actualWords: { text: string; wordIndex: number; arrayIndex: number }[] = [];
+    // words[i] -> its word index, or -1 for whitespace.
+    const wordIndexAt: number[] = new Array(words.length);
     let currentWordIdx = 0;
-    
+
     for (let i = 0; i < words.length; i++) {
-      if (words[i].trim().length > 0) {
-        actualWords.push({ text: words[i], wordIndex: currentWordIdx, arrayIndex: i });
-        currentWordIdx++;
-      }
+      wordIndexAt[i] = words[i].trim().length > 0 ? currentWordIdx++ : -1;
     }
 
     // Determine which words are highlighted by which link
@@ -124,36 +128,33 @@ const CollapsibleText = React.memo(({ text, isPrimary, links, targetType }: { te
 
     if (highlightMap.size > 0) {
       const nodes: React.ReactNode[] = [];
+      const isHighlightedAt = (k: number) => wordIndexAt[k] >= 0 && highlightMap.has(wordIndexAt[k]);
+      let plainRun = '';
+      let plainRunStart = 0;
       let i = 0;
       while (i < words.length) {
-        const isSpace = words[i].trim().length === 0;
-        const actualWord = !isSpace ? actualWords.find(aw => aw.arrayIndex === i) : null;
-        const isHighlighted = actualWord ? highlightMap.has(actualWord.wordIndex) : false;
-
-        if (isHighlighted) {
+        if (isHighlightedAt(i)) {
+          if (plainRun) {
+            nodes.push(<React.Fragment key={plainRunStart}>{plainRun}</React.Fragment>);
+            plainRun = '';
+          }
           const seqWords: string[] = [];
           const linkIdsSet = new Set<string>();
           let j = i;
 
           while (j < words.length) {
-            const subIsSpace = words[j].trim().length === 0;
-            const subActualWord = !subIsSpace ? actualWords.find(aw => aw.arrayIndex === j) : null;
-            const subIsHighlighted = subActualWord ? highlightMap.has(subActualWord.wordIndex) : false;
+            const subIsSpace = wordIndexAt[j] < 0;
 
-            if (subIsHighlighted) {
+            if (isHighlightedAt(j)) {
               seqWords.push(words[j]);
-              highlightMap.get(subActualWord!.wordIndex)!.forEach(id => linkIdsSet.add(id));
+              highlightMap.get(wordIndexAt[j])!.forEach(id => linkIdsSet.add(id));
               j++;
             } else if (subIsSpace) {
               let nextHighlighted = false;
               let peek = j + 1;
               while (peek < words.length) {
-                const peekIsSpace = words[peek].trim().length === 0;
-                if (!peekIsSpace) {
-                  const peekActualWord = actualWords.find(aw => aw.arrayIndex === peek);
-                  if (peekActualWord && highlightMap.has(peekActualWord.wordIndex)) {
-                    nextHighlighted = true;
-                  }
+                if (wordIndexAt[peek] >= 0) {
+                  nextHighlighted = highlightMap.has(wordIndexAt[peek]);
                   break;
                 }
                 peek++;
@@ -171,8 +172,7 @@ const CollapsibleText = React.memo(({ text, isPrimary, links, targetType }: { te
           }
 
           const linkIdsStr = Array.from(linkIdsSet).join(' ');
-          const firstHighlightWord = actualWords.find(aw => aw.arrayIndex === i);
-          const uniqueId = firstHighlightWord ? `source-match-${linkIdsStr.split(' ')[0]}-${firstHighlightWord.wordIndex}` : `source-match-${linkIdsStr.split(' ')[0]}-${i}`;
+          const uniqueId = `source-match-${linkIdsStr.split(' ')[0]}-${wordIndexAt[i]}`;
 
           nodes.push(
             <mark
@@ -187,10 +187,12 @@ const CollapsibleText = React.memo(({ text, isPrimary, links, targetType }: { te
           );
           i = j;
         } else {
-          nodes.push(<React.Fragment key={i}>{words[i]}</React.Fragment>);
+          if (!plainRun) plainRunStart = i;
+          plainRun += words[i];
           i++;
         }
       }
+      if (plainRun) nodes.push(<React.Fragment key={plainRunStart}>{plainRun}</React.Fragment>);
       contentNodes = nodes;
     }
   }
@@ -240,6 +242,26 @@ const CollapsibleCommentary = ({ html }: { html: string }) => {
       </button>
     </div>
   );
+};
+
+type SvgLine = { id: string; x1: number; y1: number; x2: number; y2: number; color?: string };
+
+const sameSvgLines = (a: SvgLine[], b: SvgLine[]) =>
+  a.length === b.length && a.every((line, i) => {
+    const other = b[i];
+    return line.id === other.id && line.x1 === other.x1 && line.y1 === other.y1
+      && line.x2 === other.x2 && line.y2 === other.y2 && line.color === other.color;
+  });
+
+/** First position in a sorted array whose value is >= `value`. */
+const lowerBound = (sorted: number[], value: number) => {
+  let lo = 0, hi = sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (sorted[mid] < value) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 };
 
 interface EditModeProps {
@@ -295,15 +317,29 @@ export const EditMode: React.FC<EditModeProps> = ({
   const [sourceSearchQuery, setSourceSearchQuery] = useState('');
   const [drawerTab, setDrawerTab] = useState<'nav' | 'search'>('nav');
 
-  // Scroll-to-row request from the unlinked panel, served after the next render.
-  const [pendingScrollLineIdx, setPendingScrollLineIdx] = useState<number | null>(null);
+  // Scroll request (a row from the unlinked panel, or a heading from the drawer), served once
+  // the render that mounts its target has been committed.
+  const [pendingReveal, setPendingReveal] = useState<
+    | { kind: 'row'; lineIdx1: number }
+    | { kind: 'header'; headerId: string; groupIdx: number | undefined }
+    | null
+  >(null);
   const highlightTimerRef = useRef<number | undefined>(undefined);
 
   // Connection Lines State
   const containerRef = useRef<HTMLDivElement>(null);
   /** Read by `updateSvgLines`, which runs from a ResizeObserver and cannot read state. */
   const isDragSessionOpenRef = useRef(false);
-  const [svgLines, setSvgLines] = useState<{ id: string; x1: number; y1: number; x2: number; y2: number; color?: string }[]>([]);
+  const [svgLines, setSvgLines] = useState<SvgLine[]>([]);
+
+  /** First link of each commentary line, as `links.find` would return it. */
+  const linkByLine = useMemo(() => {
+    const map = new Map<number, OtzariaLink>();
+    session.links.forEach(l => {
+      if (!map.has(l.line_index_1)) map.set(l.line_index_1, l);
+    });
+    return map;
+  }, [session.links]);
 
   const updateSvgLines = useCallback(() => {
     if (!containerRef.current) return;
@@ -315,28 +351,45 @@ export const EditMode: React.FC<EditModeProps> = ({
 
     // Hide visual connection lines on mobile screens where columns stack vertically
     if (window.innerWidth < 768) {
-      setSvgLines([]);
+      setSvgLines(prev => (prev.length === 0 ? prev : []));
       return;
     }
 
-    const containerRect = containerRef.current.getBoundingClientRect();
-    const newLines: { id: string; x1: number; y1: number; x2: number; y2: number; color?: string }[] = [];
+    const container = containerRef.current;
+    const containerRect = container.getBoundingClientRect();
+    const newLines: SvgLine[] = [];
 
-    const commMarks = containerRef.current.querySelectorAll('mark[id^="comm-match-"]');
+    // One pass over the DOM, keyed the way the per-line selectors matched: by each
+    // whitespace-separated token of the attribute, and by the first box with a given id.
+    const sourceMarksByLine = new Map<string, Element[]>();
+    container.querySelectorAll('mark[data-source-match-for]').forEach(mark => {
+      (mark.getAttribute('data-source-match-for') || '').split(/\s+/).forEach(token => {
+        if (!token) return;
+        const list = sourceMarksByLine.get(token);
+        if (list) list.push(mark);
+        else sourceMarksByLine.set(token, [mark]);
+      });
+    });
+    const commBoxById = new Map<string, Element>();
+    container.querySelectorAll('[id^="comm-box-"]').forEach(box => {
+      if (!commBoxById.has(box.id)) commBoxById.set(box.id, box);
+    });
+
+    const commMarks = container.querySelectorAll('mark[id^="comm-match-"]');
     commMarks.forEach(commMark => {
-      const commId = commMark.id; 
+      const commId = commMark.id;
       const lineIdx1Str = commId.split('-')[2];
       const lineIdx1 = parseInt(lineIdx1Str, 10);
 
       // Do not draw connecting line for inherited links
-      const linkObj = session.links.find(l => l.line_index_1 === lineIdx1 || l.line_index_1.toString() === lineIdx1Str);
+      const linkObj = linkByLine.get(lineIdx1);
       if (linkObj?.isInherited) {
         return;
       }
-      
-      const sourceMarks = containerRef.current!.querySelectorAll(`mark[data-source-match-for~="${lineIdx1}"]`);
+
+      const sourceMarks = sourceMarksByLine.get(String(lineIdx1)) ?? [];
       if (sourceMarks.length > 0) {
-        const commBox = containerRef.current!.querySelector(`#comm-box-${lineIdx1}`);
+        const commBox = commBoxById.get(`comm-box-${lineIdx1}`);
         if (!commBox) return;
         const commBoxRect = commBox.getBoundingClientRect();
         
@@ -366,34 +419,10 @@ export const EditMode: React.FC<EditModeProps> = ({
         });
       }
     });
-    setSvgLines(newLines);
-  }, [session.links, session.dhHighlights]);
+    // An unchanged result must not re-render the whole list.
+    setSvgLines(prev => (sameSvgLines(prev, newLines) ? prev : newLines));
+  }, [linkByLine, session.dhHighlights]);
 
-  useEffect(() => {
-    const t = setTimeout(updateSvgLines, 100);
-    window.addEventListener('resize', updateSvgLines);
-    
-    let observer: ResizeObserver | null = null;
-    if (containerRef.current) {
-      observer = new ResizeObserver(() => {
-        updateSvgLines();
-      });
-      // Observe all children (the cards) to react to expansions
-      Array.from(containerRef.current.children).forEach(child => {
-        if (child.tagName !== 'svg') {
-          observer!.observe(child);
-        }
-      });
-    }
-
-    return () => {
-      clearTimeout(t);
-      window.removeEventListener('resize', updateSvgLines);
-      if (observer) {
-        observer.disconnect();
-      }
-    };
-  }, [updateSvgLines, sortMode]);
 
   // Navigation Drawer & Section Heading Highlight state
   const [highlightedHeaderId, setHighlightedHeaderId] = useState<string | null>(null);
@@ -422,7 +451,7 @@ export const EditMode: React.FC<EditModeProps> = ({
     // The row that was clicked decides the direction, and the rest of the selection follows it —
     // otherwise a mixed selection would just flip into a differently mixed one.
     const targets = new Set(actionTargets(commLineIdx1));
-    const clicked = session.links.find(l => l.line_index_1 === commLineIdx1);
+    const clicked = linkByLine.get(commLineIdx1);
     const nextStatus: 'approved' | 'pending' =
       (clicked?.status || 'approved') === 'approved' ? 'pending' : 'approved';
 
@@ -659,25 +688,13 @@ export const EditMode: React.FC<EditModeProps> = ({
   }, [commentarySegments, drawerSearchQuery]);
 
   const handleSelectHeading = (seg: HeaderSegment) => {
-    // Find target line index for the segment
-    const targetLineIdx1 = seg.headerLineIndex > 0 ? seg.headerLineIndex : seg.startLine;
-
-    // Find target index in sortedCommentaryIndices
-    let targetItemIdx = sortedCommentaryIndices.findIndex(lineArrIdx => (lineArrIdx + 1) >= seg.startLine);
-    if (targetItemIdx === -1 && sortedCommentaryIndices.length > 0) {
-      targetItemIdx = 0;
-    }
-
-
     const headerId = seg.headerLineIndex > 0 ? `header-${seg.headerLineIndex}` : `header-start-${seg.startLine}`;
     setHighlightedHeaderId(headerId);
-
-    setTimeout(() => {
-      const el = document.getElementById(headerId);
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-    }, 100);
+    setPendingReveal({
+      kind: 'header',
+      headerId,
+      groupIdx: firstGroupBySegment.get(commentarySegments.indexOf(seg))
+    });
 
     setTimeout(() => {
       setHighlightedHeaderId(null);
@@ -702,7 +719,7 @@ export const EditMode: React.FC<EditModeProps> = ({
         return;
       }
 
-      const link = links.find(l => l.line_index_1 === commLineIdx1);
+      const link = linkByLine.get(commLineIdx1);
 
       if (q) {
         let lineMatches = line.toLowerCase().includes(q) || commLineIdx1.toString() === q;
@@ -723,8 +740,8 @@ export const EditMode: React.FC<EditModeProps> = ({
        indices.sort((idxA, idxB) => {
            const a = idxA + 1;
            const b = idxB + 1;
-           const linkA = links.find(l => l.line_index_1 === a);
-           const linkB = links.find(l => l.line_index_1 === b);
+           const linkA = linkByLine.get(a);
+           const linkB = linkByLine.get(b);
            const scoreA = linkA ? (linkA.confidence ?? 85) : 0;
            const scoreB = linkB ? (linkB.confidence ?? 85) : 0;
            if (sortMode === 'score_asc') return scoreA - scoreB;
@@ -733,7 +750,7 @@ export const EditMode: React.FC<EditModeProps> = ({
     }
 
     return indices;
-  }, [commentaryLines, links, sourceSearchQuery, sortMode, sourceLines, rashiLines, tosafotLines, chainProfile]);
+  }, [commentaryLines, linkByLine, sourceSearchQuery, sortMode, sourceLines, rashiLines, tosafotLines, chainProfile]);
 
   const groupedCommentary = useMemo(() => {
     const groups: {
@@ -748,7 +765,7 @@ export const EditMode: React.FC<EditModeProps> = ({
 
     sortedCommentaryIndices.forEach(idx => {
       const commLineIdx1 = idx + 1;
-      const linkObj = links.find(l => l.line_index_1 === commLineIdx1);
+      const linkObj = linkByLine.get(commLineIdx1);
 
       // A בא"ד line with no source shares the frame of the unlinked line it hangs from, so the
       // two are presented — and resolved — as one unit.
@@ -775,7 +792,120 @@ export const EditMode: React.FC<EditModeProps> = ({
     });
 
     return groups;
-  }, [sortedCommentaryIndices, links, pendingInheritanceHeads]);
+  }, [sortedCommentaryIndices, linkByLine, pendingInheritanceHeads]);
+
+  /** The first segment containing each commentary line, or -1. */
+  const segmentIndexByLine = useMemo(() => {
+    const byLine = new Int32Array(commentaryLines.length + 2).fill(-1);
+    commentarySegments.forEach((seg, segIdx) => {
+      for (let line = Math.max(0, seg.startLine); line <= Math.min(seg.endLine, byLine.length - 1); line++) {
+        if (byLine[line] === -1) byLine[line] = segIdx;
+      }
+    });
+    return byLine;
+  }, [commentaryLines.length, commentarySegments]);
+
+  /** The group that carries each segment's heading banner: the first one starting inside it. */
+  const firstGroupBySegment = useMemo(() => {
+    const map = new Map<number, number>();
+    groupedCommentary.forEach((group, gIdx) => {
+      const segIdx = segmentIndexByLine[group.commIndices[0]] ?? -1;
+      if (segIdx !== -1 && !map.has(segIdx)) map.set(segIdx, gIdx);
+    });
+    return map;
+  }, [groupedCommentary, segmentIndexByLine]);
+
+  const groupIndexByLine = useMemo(() => {
+    const map = new Map<number, number>();
+    groupedCommentary.forEach((group, gIdx) => group.commIndices.forEach(line => map.set(line, gIdx)));
+    return map;
+  }, [groupedCommentary]);
+
+  /** Sorted line numbers of all links, for counting the links of a segment. */
+  const sortedLinkLines = useMemo(
+    () => links.map(l => l.line_index_1).sort((a, b) => a - b),
+    [links]
+  );
+  const countLinksInRange = (startLine: number, endLine: number) =>
+    lowerBound(sortedLinkLines, endLine + 1) - lowerBound(sortedLinkLines, startLine);
+
+  /* ------------------------------------------------------------------
+   * Render window: only a slice of the groups is mounted, and it moves as the user scrolls
+   * ------------------------------------------------------------------ */
+
+  const [requestedWindowStart, setWindowStart] = useState(0);
+  const windowStart = clampWindowStart(requestedWindowStart, groupedCommentary.length);
+  const windowEnd = Math.min(groupedCommentary.length, windowStart + RENDER_WINDOW_SIZE);
+  const topSentinelRef = useRef<HTMLDivElement>(null);
+  const bottomSentinelRef = useRef<HTMLDivElement>(null);
+  const scrollAnchorRef = useRef<{ groupIdx: number; top: number } | null>(null);
+  /** The window jumped to serve a pending reveal, so the reveal scrolls instantly. */
+  const revealJumpedRef = useRef(false);
+
+  const findGroupElement = (groupIdx: number) =>
+    containerRef.current?.querySelector<HTMLElement>(`[data-group-idx="${groupIdx}"]`) ?? null;
+
+  const shiftWindow = useCallback((direction: 1 | -1) => {
+    const next = shiftWindowStart(windowStart, direction, groupedCommentary.length);
+    if (next === windowStart || !containerRef.current) return;
+    // Pin the first group on screen, so mounting or dropping groups above it does not move the view.
+    scrollAnchorRef.current = null;
+    for (const element of containerRef.current.querySelectorAll<HTMLElement>('[data-group-idx]')) {
+      const rect = element.getBoundingClientRect();
+      if (rect.bottom > 0) {
+        scrollAnchorRef.current = { groupIdx: Number(element.dataset.groupIdx), top: rect.top };
+        break;
+      }
+    }
+    setWindowStart(next);
+  }, [windowStart, groupedCommentary.length]);
+
+  useLayoutEffect(() => {
+    const anchor = scrollAnchorRef.current;
+    scrollAnchorRef.current = null;
+    if (!anchor) return;
+    const element = findGroupElement(anchor.groupIdx);
+    if (!element) return;
+    const delta = element.getBoundingClientRect().top - anchor.top;
+    if (delta !== 0) window.scrollBy(0, delta);
+  }, [windowStart]);
+
+  // Re-created on every move, so a sentinel still in range after one step triggers the next.
+  useEffect(() => {
+    const observer = new IntersectionObserver(entries => {
+      const hit = entries.find(entry => entry.isIntersecting);
+      if (hit) shiftWindow(hit.target === topSentinelRef.current ? -1 : 1);
+    }, { rootMargin: '1000px 0px' });
+    if (topSentinelRef.current) observer.observe(topSentinelRef.current);
+    if (bottomSentinelRef.current) observer.observe(bottomSentinelRef.current);
+    return () => observer.disconnect();
+  }, [shiftWindow]);
+
+  useEffect(() => {
+    const t = setTimeout(updateSvgLines, 100);
+    window.addEventListener('resize', updateSvgLines);
+    
+    let observer: ResizeObserver | null = null;
+    if (containerRef.current) {
+      observer = new ResizeObserver(() => {
+        updateSvgLines();
+      });
+      // Observe all children (the cards) to react to expansions
+      Array.from(containerRef.current.children).forEach(child => {
+        if (child.tagName !== 'svg') {
+          observer!.observe(child);
+        }
+      });
+    }
+
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener('resize', updateSvgLines);
+      if (observer) {
+        observer.disconnect();
+      }
+    };
+  }, [updateSvgLines, sortMode, windowStart]);
 
   // Add / Update / Remove the link of a single line, over a links array that may already carry
   // the result of the same edit applied to the lines above it (see handleSaveLink).
@@ -920,7 +1050,7 @@ export const EditMode: React.FC<EditModeProps> = ({
    */
   const handleToggleInheritance = (commLineIdx1: number) => {
     const targets = actionTargets(commLineIdx1);
-    const clickedLink = links.find(l => l.line_index_1 === commLineIdx1);
+    const clickedLink = linkByLine.get(commLineIdx1);
     const detach = Boolean(clickedLink?.isInherited) || manualInheritSet.has(commLineIdx1);
 
     let workingLinks = links;
@@ -1028,10 +1158,10 @@ export const EditMode: React.FC<EditModeProps> = ({
       rashiLines,
       tosafotLines,
       otherSecondaries,
-      currentLink: links.find(l => l.line_index_1 === commLineIdx1),
+      currentLink: linkByLine.get(commLineIdx1),
       targetBookName: config.targetBookName
     });
-  }, [commentaryLines.length, sourceLines, rashiLines, tosafotLines, otherSecondaries, links, config.targetBookName]);
+  }, [commentaryLines.length, sourceLines, rashiLines, tosafotLines, otherSecondaries, linkByLine, config.targetBookName]);
 
   const handleCommitDrop = useCallback((commLineIdx1: number, dropId: string) => {
     const parsed = parseDropId(dropId);
@@ -1132,19 +1262,43 @@ export const EditMode: React.FC<EditModeProps> = ({
     // search — so the row the user just asked for may not be rendered there at all.
     // Dropping the filter is what makes "scroll to it" possible, and it is only dropped
     // when the row really is missing.
-    if (!findCommentaryRow(lineIdx1)) setSourceSearchQuery('');
-    setPendingScrollLineIdx(lineIdx1);
-  }, [findCommentaryRow]);
+    if (!renderPositionByLine.has(lineIdx1)) setSourceSearchQuery('');
+    setPendingReveal({ kind: 'row', lineIdx1 });
+  }, [renderPositionByLine]);
 
-  // Runs once the render that reveals the row has been committed.
+  // Runs once the render that reveals the target has been committed: first moves the render
+  // window onto it if needed, then scrolls on the render that mounted it.
   useEffect(() => {
-    if (pendingScrollLineIdx === null) return;
-    setPendingScrollLineIdx(null);
+    if (pendingReveal === null) return;
 
-    const element = findCommentaryRow(pendingScrollLineIdx);
+    const groupIdx = pendingReveal.kind === 'row'
+      ? groupIndexByLine.get(pendingReveal.lineIdx1)
+      : pendingReveal.groupIdx;
+    if (groupIdx !== undefined) {
+      const nextStart = windowStartToReveal(groupIdx, windowStart, groupedCommentary.length);
+      if (nextStart !== windowStart) {
+        revealJumpedRef.current = true;
+        setWindowStart(nextStart);
+        return;
+      }
+    }
+    setPendingReveal(null);
+    // After a jump the content under the viewport was replaced, so there is nothing to glide over.
+    const behavior: ScrollBehavior = revealJumpedRef.current ? 'auto' : 'smooth';
+    revealJumpedRef.current = false;
+
+    if (pendingReveal.kind === 'header') {
+      const { headerId } = pendingReveal;
+      setTimeout(() => {
+        document.getElementById(headerId)?.scrollIntoView({ behavior, block: 'center' });
+      }, 100);
+      return;
+    }
+
+    const element = findCommentaryRow(pendingReveal.lineIdx1);
     if (!element) return;
 
-    element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    element.scrollIntoView({ behavior, block: 'center' });
 
     const highlight = ['ring-2', 'ring-amber-400', 'dark:ring-amber-500', 'animate-pulse'];
     element.classList.add(...highlight);
@@ -1152,7 +1306,7 @@ export const EditMode: React.FC<EditModeProps> = ({
     highlightTimerRef.current = window.setTimeout(() => {
       element.classList.remove(...highlight);
     }, 1500);
-  }, [pendingScrollLineIdx, findCommentaryRow]);
+  }, [pendingReveal, findCommentaryRow, groupIndexByLine, windowStart, groupedCommentary.length]);
 
   useEffect(() => () => window.clearTimeout(highlightTimerRef.current), []);
 
@@ -1390,18 +1544,12 @@ export const EditMode: React.FC<EditModeProps> = ({
 
   // Render Section Heading Banner if this group is the first group for its segment on the current page
   const renderSegmentHeaderIfNeeded = (groupCommLineIdx1: number, gIdx: number) => {
-    const segIndex = commentarySegments.findIndex(
-      s => groupCommLineIdx1 >= s.startLine && groupCommLineIdx1 <= s.endLine
-    );
+    const segIndex = segmentIndexByLine[groupCommLineIdx1] ?? -1;
     if (segIndex === -1) return null;
 
     const seg = commentarySegments[segIndex];
 
-    const isFirstGroupForSegOnPage = groupedCommentary.findIndex(
-      g => g.commIndices[0] >= seg.startLine && g.commIndices[0] <= seg.endLine
-    ) === gIdx;
-
-    if (!isFirstGroupForSegOnPage) return null;
+    if (firstGroupBySegment.get(segIndex) !== gIdx) return null;
 
     const headerId = seg.headerLineIndex > 0 ? `header-${seg.headerLineIndex}` : `header-start-${seg.startLine}`;
     const isHighlighted = highlightedHeaderId === headerId;
@@ -1459,7 +1607,10 @@ export const EditMode: React.FC<EditModeProps> = ({
             לא נמצאו שורות פירוש המתאימות לסינון המבוקש
           </div>
         ) : (
-          groupedCommentary.map((group, gIdx) => {
+          <>
+          {windowStart > 0 && <div ref={topSentinelRef} aria-hidden="true" />}
+          {groupedCommentary.slice(windowStart, windowEnd).map((group, offset) => {
+            const gIdx = windowStart + offset;
             const firstLinkObj = group.links[0];
             const firstCommIdx = group.commIndices[0];
             // Front matter (see linkingStartLine): no source column verdict at all, since the
@@ -1470,6 +1621,7 @@ export const EditMode: React.FC<EditModeProps> = ({
               <React.Fragment key={`comm-group-wrap-${group.targetKey}-${gIdx}`}>
                 {renderSegmentHeaderIfNeeded(firstCommIdx, gIdx)}
                 <div
+                  data-group-idx={gIdx}
                   className="grid grid-cols-1 md:grid-cols-12 gap-2.5 p-2.5 md:p-3 rounded-xl border bg-[var(--color-surface)] border-[var(--color-outline-variant)] shadow-2xs hover:shadow-xs transition-all"
                 >
                   {/* Primary Commentary Lines (7 Cols) */}
@@ -1544,7 +1696,9 @@ export const EditMode: React.FC<EditModeProps> = ({
                 </div>
               </React.Fragment>
             );
-          })
+          })}
+          {windowEnd < groupedCommentary.length && <div ref={bottomSentinelRef} aria-hidden="true" />}
+          </>
         )}
 
       </div>
@@ -1621,7 +1775,7 @@ export const EditMode: React.FC<EditModeProps> = ({
         <EditLinkModal
           commLineIndex={editingCommLineIdx}
           commLineText={commentaryLines[editingCommLineIdx - 1] || ''}
-          currentLink={links.find(l => l.line_index_1 === editingCommLineIdx)}
+          currentLink={linkByLine.get(editingCommLineIdx)}
           sourceLinesCount={sourceLines.length}
           sourceLines={sourceLines}
           commentaryLines={commentaryLines}
@@ -1738,9 +1892,7 @@ export const EditMode: React.FC<EditModeProps> = ({
                       </div>
                     ) : (
                       filteredDrawerSegments.map((seg, sIdx) => {
-                        const segLinkCount = links.filter(
-                          l => l.line_index_1 >= seg.startLine && l.line_index_1 <= seg.endLine
-                        ).length;
+                        const segLinkCount = countLinksInRange(seg.startLine, seg.endLine);
 
                         return (
                           <button
