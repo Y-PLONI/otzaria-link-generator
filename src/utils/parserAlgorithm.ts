@@ -1,5 +1,6 @@
 import { OtzariaLink, PluginConfig, DHHighlight, SessionState } from '../types';
 import { expandAbbreviationsInText, DEFAULT_ABBREVIATIONS, NORMALIZED_ABBREVIATIONS_MAP, ABBR_MARK } from '../data/abbreviations';
+import { HALACHA_COMMENTATORS } from '../data/halachaCommentators';
 
 /**
  * FIX ח׳ — a resolved abbreviation keeps ONE slot of the maxDhWords cap and bridges the run,
@@ -22,7 +23,8 @@ import {
   stripHalachaLeadIn,
   isNumberedContentHeader,
   isSeifKatanMarkerLine,
-  findDhBoundary
+  findDhBoundary,
+  containsSiman
 } from './halachaAlgorithm';
 
 /**
@@ -719,9 +721,6 @@ function toPrefixAlternation(keywords: string[]): string {
     .join('|');
 }
 
-const RASHI_PREFIX_ALTS = toPrefixAlternation(RASHI_KEYWORDS);
-const TOSAFOT_PREFIX_ALTS = toPrefixAlternation(TOSAFOT_KEYWORDS);
-
 /**
  * "Not followed by another Hebrew letter" — the word boundary every source-name test needs.
  * See startsWithSourceKeyword below for why; the same assertion is spliced into the strip
@@ -729,10 +728,15 @@ const TOSAFOT_PREFIX_ALTS = toPrefixAlternation(TOSAFOT_KEYWORDS);
  */
 const NOT_HEBREW_LETTER_AHEAD = '(?![\\u05D0-\\u05EA])';
 
-const SECONDARY_PREFIX_STRIP_RE = new RegExp(
-  `^(?:${RASHI_PREFIX_ALTS}|${TOSAFOT_PREFIX_ALTS}|שם\\s+ד"ה|או"ד|באו"ד|א"ד|בא"ד|אד|באד|אוד|באוד|בד"ה|בדה)${NOT_HEBREW_LETTER_AHEAD}\\s*[:.\\-]?\\s*`,
-  'i'
-);
+/** The strip regex for a run whose secondary sources are named by `keywordLists`. */
+function buildSecondaryPrefixStripRe(keywordLists: string[][]): RegExp {
+  return new RegExp(
+    `^(?:${keywordLists.map(toPrefixAlternation).join('|')}|שם\\s+ד"ה|או"ד|באו"ד|א"ד|בא"ד|אד|באד|אוד|באוד|בד"ה|בדה)${NOT_HEBREW_LETTER_AHEAD}\\s*[:.\\-]?\\s*`,
+    'i'
+  );
+}
+
+const SECONDARY_PREFIX_STRIP_RE = buildSecondaryPrefixStripRe([RASHI_KEYWORDS, TOSAFOT_KEYWORDS]);
 
 /**
  * Keywords that indicate the commentary is citing the Gemara (primary Talmud source).
@@ -854,13 +858,61 @@ function stripLeadingMarkers(text: string): string {
   return out;
 }
 
-const getSecondaryPath = (targetSecondary: 'rashi' | 'tosafot', targetBookName: string) =>
-  targetSecondary === 'rashi'
-    ? `רש"י על ${targetBookName}.txt`
-    : `תוספות על ${targetBookName}.txt`;
+/**
+ * A book a commentary line may cite by name instead of its base text: רש"י / תוספות on the ש"ס and
+ * תנ"ך, a נושא כלים on a חלק of the שו"ע. `id` is what a link stores in `secondaryTarget`.
+ */
+export interface SecondarySource {
+  id: string;
+  label: string;
+  /** the book's library title — a link's path_2 without `.txt` */
+  title: string;
+  keywords: string[];
+  keywordsNorm: string[];
+  /** ד"ה word cap for this book; the profile's when absent */
+  maxDhWords?: number;
+}
 
-const getSecondaryBookLabel = (targetSecondary: 'rashi' | 'tosafot') =>
-  targetSecondary === 'rashi' ? 'רש"י' : 'תוספות';
+const secondarySourcesCache = new Map<string, SecondarySource[]>();
+
+/** The secondary sources of a run, in routing order. */
+export function secondarySourcesFor(config: Pick<PluginConfig, 'sourceCategory' | 'targetBookName'>): SecondarySource[] {
+  const key = `${config.sourceCategory}|${config.targetBookName}`;
+  const cached = secondarySourcesCache.get(key);
+  if (cached) return cached;
+  const book = config.targetBookName;
+  const sources: SecondarySource[] = config.sourceCategory === 'halacha'
+    ? (HALACHA_COMMENTATORS[book] || []).map(c => ({
+        ...c,
+        keywordsNorm: [...new Set(c.keywords.map(_normalizeKw))].sort((a, b) => b.length - a.length)
+      }))
+    : [
+        { id: 'rashi', label: 'רש"י', title: `רש"י על ${book}`, keywords: RASHI_KEYWORDS, keywordsNorm: RASHI_KEYWORDS_NORM, maxDhWords: 12 },
+        { id: 'tosafot', label: 'תוספות', title: `תוספות על ${book}`, keywords: TOSAFOT_KEYWORDS, keywordsNorm: TOSAFOT_KEYWORDS_NORM, maxDhWords: 7 }
+      ];
+  secondarySourcesCache.set(key, sources);
+  return sources;
+}
+
+/** The lines of secondary source `id` in a session or a parse result. */
+export function secondaryLinesOf(
+  holder: { rashiLines?: string[]; tosafotLines?: string[]; secondaryLines?: Record<string, string[]> },
+  id: string | null | undefined
+): string[] | undefined {
+  if (id === 'rashi') return holder.rashiLines;
+  if (id === 'tosafot') return holder.tosafotLines;
+  return id ? holder.secondaryLines?.[id] : undefined;
+}
+
+/** Every secondary document a session holds, Rashi and Tosafot first. */
+export function allSecondaryLines(
+  holder: { rashiLines?: string[]; tosafotLines?: string[]; secondaryLines?: Record<string, string[]> }
+): [string, string[]][] {
+  const out: [string, string[]][] = [];
+  if (holder.rashiLines) out.push(['rashi', holder.rashiLines]);
+  if (holder.tosafotLines) out.push(['tosafot', holder.tosafotLines]);
+  return out.concat(Object.entries(holder.secondaryLines || {}));
+}
 
 /**
  * Strips leading secondary source citation prefixes (e.g. רש"י ד"ה, תוספות ד"ה)
@@ -875,6 +927,10 @@ export function normalizeHebrewQuotes(text: string): string {
 }
 
 export function stripSecondaryPrefix(line: string): string {
+  return stripSecondaryPrefixWith(line, SECONDARY_PREFIX_STRIP_RE);
+}
+
+function stripSecondaryPrefixWith(line: string, prefixRe: RegExp): string {
   if (!line) return '';
   // Step 1: normalize quotes and remove HTML + nikud before regex matching (fixes BUG-37)
   //
@@ -903,11 +959,11 @@ export function stripSecondaryPrefix(line: string): string {
   cleaned = stripLeadingMarkers(cleaned);
 
   // Step 2: strip the secondary-source prefix.
-  // Uses dynamically built regex from RASHI_KEYWORDS and TOSAFOT_KEYWORDS.
+  // The regex is the run's: built from its secondary sources' names (buildSecondaryPrefixStripRe).
   // Applied ONCE, deliberately: unlike the pointer tokens above, the source names include
   // bare forms ('תוס', 'רש"י', 'תו') that can legitimately be the first word of a Dibur
   // Hamatchil, so looping here could eat real citation text.
-  cleaned = cleaned.replace(SECONDARY_PREFIX_STRIP_RE, '');
+  cleaned = cleaned.replace(prefixRe, '');
 
   // Step 3: strip a bare ד"ה / בד"ה / דה that may remain after removing only the source name
   // e.g. line was "בפי' רש"י בד"ה ופליגי" — "בפי' רש"י" stripped, "בד"ה" still leads.
@@ -1078,6 +1134,22 @@ export function findMatchingSegment(
 }
 
 /**
+ * The segment of a secondary book that a commentary segment cites. In הלכה a נושא כלים may divide a
+ * סימן by סעיף headers (ש"ך), so the סימן runs on through them to the next סימן.
+ */
+function findSecondarySegment(
+  segments: HeaderSegment[],
+  commHeaderTitle: string,
+  profile: SourceProfile
+): HeaderSegment | null {
+  const seg = findMatchingSegment(segments, commHeaderTitle);
+  if (!seg || profile.kind !== 'halacha') return seg || null;
+  let last = segments.indexOf(seg);
+  while (last + 1 < segments.length && !containsSiman(segments[last + 1].headerTitle)) last++;
+  return { ...seg, endLine: segments[last].endLine };
+}
+
+/**
  * Index of the first commentary segment whose header has a counterpart ("כותרת מקבילה") in any
  * of the target documents, or -1 when no commentary header matches anything.
  *
@@ -1113,7 +1185,8 @@ export function findLinkingStartLine(
   sourceLines: string[],
   rashiLines?: string[],
   tosafotLines?: string[],
-  profile?: SourceProfile
+  profile?: SourceProfile,
+  otherSecondaryLines: string[][] = []
 ): number {
   if (!commentaryLines || commentaryLines.length === 0) return 1;
 
@@ -1124,7 +1197,8 @@ export function findLinkingStartLine(
   const firstAligned = findFirstAlignedSegmentIndex(commSegments, [
     segmentsOf(sourceLines),
     segmentsOf(rashiLines),
-    segmentsOf(tosafotLines)
+    segmentsOf(tosafotLines),
+    ...otherSecondaryLines.map(segmentsOf)
   ]);
   if (firstAligned <= 0) return 1;
 
@@ -1279,13 +1353,16 @@ export function runLinkingParser(
   rashiRaw?: string,
   tosafotRaw?: string,
   rashiLinks?: any[],
-  tosafotLinks?: any[]
+  tosafotLinks?: any[],
+  /** Secondary sources other than רש"י/תוספות, by SecondarySource id (the נושאי כלים of a חלק שו"ע). */
+  secondaries?: Record<string, { text?: string; links?: any[] }>
 ): {
   links: OtzariaLink[];
   commentaryLines: string[];
   sourceLines: string[];
   rashiLines?: string[];
   tosafotLines?: string[];
+  secondaryLines?: Record<string, string[]>;
   dhHighlights: Record<number, DHHighlight>;
 } {
   // Perf: gate the (very) verbose tracing behind an explicit debug flag.
@@ -1315,19 +1392,45 @@ export function runLinkingParser(
   let activePassIndex = 0;
   const commDoc = parseDocumentSegments(commentaryRaw, profile);
   const srcDoc = parseDocumentSegments(sourceRaw, profile);
-  const rashiDoc = rashiRaw ? parseDocumentSegments(rashiRaw, profile) : null;
-  const tosafotDoc = tosafotRaw ? parseDocumentSegments(tosafotRaw, profile) : null;
 
   const enableWordWeighting = config.useWordWeighting !== false;
   const srcIdfMap = enableWordWeighting ? calculateDocumentIdfWeights(srcDoc.lines, commDoc.lines) : undefined;
-  const rashiIdfMap = (enableWordWeighting && rashiDoc) ? calculateDocumentIdfWeights(rashiDoc.lines, commDoc.lines) : undefined;
-  const tosafotIdfMap = (enableWordWeighting && tosafotDoc) ? calculateDocumentIdfWeights(tosafotDoc.lines, commDoc.lines) : undefined;
 
   // Perf: precompute per-line normalization/tokenization/fingerprint caches once per
   // document (see buildLineCache above) instead of recomputing them on every search.
   const srcLineCache = buildLineCache(srcDoc.lines);
-  const rashiLineCache = rashiDoc ? buildLineCache(rashiDoc.lines) : undefined;
-  const tosafotLineCache = tosafotDoc ? buildLineCache(tosafotDoc.lines) : undefined;
+
+  const sources = secondarySourcesFor(config);
+  const secondaryInput = (id: string) =>
+    id === 'rashi' ? { text: rashiRaw, links: rashiLinks }
+      : id === 'tosafot' ? { text: tosafotRaw, links: tosafotLinks }
+        : secondaries?.[id];
+  /** Each loaded secondary source with its parsed document and per-document search caches. */
+  const secondaryDocs = new Map<string, {
+    source: SecondarySource;
+    doc: { lines: string[]; segments: HeaderSegment[] };
+    idf?: ReturnType<typeof calculateDocumentIdfWeights>;
+    cache: ReturnType<typeof buildLineCache>;
+    links?: any[];
+  }>();
+  for (const source of sources) {
+    const input = secondaryInput(source.id);
+    if (!input?.text) continue;
+    const doc = parseDocumentSegments(input.text, profile);
+    secondaryDocs.set(source.id, {
+      source,
+      doc,
+      idf: enableWordWeighting ? calculateDocumentIdfWeights(doc.lines, commDoc.lines) : undefined,
+      cache: buildLineCache(doc.lines),
+      links: input.links
+    });
+  }
+  // ציטוט רש"י/תוס' מנותב אליו גם כשהספר לא נטען; נושא כלים שלא נטען אינו מוציא
+  // את השורה מחיפוש בשו"ע.
+  const routableSources = profile.kind === 'halacha' ? sources.filter(s => secondaryDocs.has(s.id)) : sources;
+  const secondaryPrefixRe = profile.kind === 'halacha' && routableSources.length > 0
+    ? buildSecondaryPrefixStripRe([RASHI_KEYWORDS, TOSAFOT_KEYWORDS, ...routableSources.map(s => s.keywords)])
+    : SECONDARY_PREFIX_STRIP_RE;
 
   /**
    * What both search functions return. `evidence` is display-only: it records how the winner
@@ -2236,7 +2339,7 @@ export function runLinkingParser(
     return null;
   };
 
-  if (DEBUG) console.log(`  📄 commDoc.segments=${commDoc.segments.length}, srcDoc.segments=${srcDoc.segments.length}, rashiDoc=${rashiDoc ? rashiDoc.segments.length : 'null'}, tosafotDoc=${tosafotDoc ? tosafotDoc.segments.length : 'null'}`);
+  if (DEBUG) console.log(`  📄 commDoc.segments=${commDoc.segments.length}, srcDoc.segments=${srcDoc.segments.length}, secondary=${[...secondaryDocs.values()].map(d => `${d.source.id}:${d.doc.segments.length}`).join(',') || 'none'}`);
 
   const links: OtzariaLink[] = [];
   const dhHighlights: Record<number, DHHighlight> = {};
@@ -2255,7 +2358,7 @@ export function runLinkingParser(
     // המספור נחתך לפני הספירה בדיוק כפי שהוא נחתך לפני חילוץ הד"ה, אחרת "פותח את השורה"
     // היה נמדד על אסימון המספור עצמו במקום על המילה הראשונה של הציטוט.
     const t = stripHalachaLeadIn(raw, profile).trim();
-    const stripped = stripSecondaryPrefix(t);
+    const stripped = stripSecondaryPrefixWith(t, secondaryPrefixRe);
     const first = normalizeText(stripped.trim() ? stripped : t).split(/\s+/).filter(Boolean)[0];
     if (first) swdhOpeningCount.set(first, (swdhOpeningCount.get(first) || 0) + 1);
   }
@@ -2264,7 +2367,7 @@ export function runLinkingParser(
     swdhContentLines > 0 ? (swdhOpeningCount.get(w) || 0) / swdhContentLines : 1;
 
   // Map source header segments to commentary header segments
-  let previousSecondaryType: 'rashi' | 'tosafot' | null = null;
+  let previousSecondaryType: string | null = null;
 
   // The inheritance context a segment leaves behind: the last link of the last segment that had
   // any content lines, and its inheritance depth. A segment normally starts from scratch, but a
@@ -2279,8 +2382,7 @@ export function runLinkingParser(
   // inheritance chain (see findFirstAlignedSegmentIndex for why, and what -1 means).
   const firstAlignedSegIdx = findFirstAlignedSegmentIndex(commDoc.segments, [
     srcDoc.segments,
-    rashiDoc ? rashiDoc.segments : null,
-    tosafotDoc ? tosafotDoc.segments : null
+    ...[...secondaryDocs.values()].map(d => d.doc.segments)
   ]);
   if (DEBUG && firstAlignedSegIdx > 0) {
     console.log(`  ⏭️  Skipping ${firstAlignedSegIdx} front-matter segment(s) before the first matching header '${commDoc.segments[firstAlignedSegIdx].headerTitle}'`);
@@ -2367,12 +2469,16 @@ export function runLinkingParser(
     // source lines (Rashi / Tosafot) have already been claimed by an explicit ד"ה/בד"ה
     // citation, so a later, different explicit citation in the same segment can never
     // resolve to the exact same line — see excludeLines usage above.
-    const usedSecondaryLines: { rashi: Set<number>; tosafot: Set<number> } = { rashi: new Set(), tosafot: new Set() };
+    const usedSecondaryLines = new Map<string, Set<number>>();
+    const usedLinesOf = (id: string) => {
+      if (!usedSecondaryLines.has(id)) usedSecondaryLines.set(id, new Set());
+      return usedSecondaryLines.get(id)!;
+    };
 
     // Find matching source segment
     const srcSeg = findMatchingSegment(srcDoc.segments, commSeg.headerTitle);
-    const rashiSeg = rashiDoc ? findMatchingSegment(rashiDoc.segments, commSeg.headerTitle) || null : null;
-    const tosafotSeg = tosafotDoc ? findMatchingSegment(tosafotDoc.segments, commSeg.headerTitle) || null : null;
+    const secondarySegs = new Map<string, HeaderSegment | null>();
+    secondaryDocs.forEach((d, id) => secondarySegs.set(id, findSecondarySegment(d.doc.segments, commSeg.headerTitle, profile)));
 
     let lastMatchedSrcLineIndex = srcSeg ? srcSeg.startLine : 1;
 
@@ -2520,21 +2626,14 @@ export function runLinkingParser(
       // left the line empty (meaning the whole line was just "גמ'" with no secondary keyword).
       const lineForKeywordCheck = strippedContextLine || cleanedPrefix || normalizedPrefixLine;
 
-      let targetSecondary: 'rashi' | 'tosafot' | null = null;
+      let targetSecondary: string | null = null;
       let explicitSecondaryTarget = false;
 
-      // בקטגוריית הלכה אין מקורות משניים לנתב אליהם (ראו SourceProfile.hasSecondarySources):
-      // כל קישור מצביע על השו"ע עצמו, וכל מנגנון הניתוב לרש"י/תוספות מדולג.
-      if (!profile.hasSecondarySources) {
-        // אין מה לבדוק — targetSecondary נשאר null ו-explicitSecondaryTarget נשאר false.
-      } else if (startsWithSourceKeyword(lineForKeywordCheck, RASHI_KEYWORDS_NORM)) {
-        targetSecondary = 'rashi';
+      const namedSource = routableSources.find(source => startsWithSourceKeyword(lineForKeywordCheck, source.keywordsNorm));
+      if (namedSource) {
+        targetSecondary = namedSource.id;
         explicitSecondaryTarget = true;
-        if (DEBUG) console.log(`  ✅ Detected Rashi keyword. normalizedPrefixLine='${normalizedPrefixLine}'`);
-      } else if (startsWithSourceKeyword(lineForKeywordCheck, TOSAFOT_KEYWORDS_NORM)) {
-        targetSecondary = 'tosafot';
-        explicitSecondaryTarget = true;
-        if (DEBUG) console.log(`  ✅ Detected Tosafot keyword. normalizedPrefixLine='${normalizedPrefixLine}'`);
+        if (DEBUG) console.log(`  ✅ Detected ${namedSource.label} keyword. normalizedPrefixLine='${normalizedPrefixLine}'`);
       } else {
         // Only "שם" followed immediately by a real delimiter (ד"ה / בא"ד / א"ד וכו') routes
         // to the same secondary target as before — that's a genuine continuation reference
@@ -2594,7 +2693,7 @@ export function runLinkingParser(
       let isInherited = false;
 
       // Extract DH search text using stripped line if secondary prefix present
-      const lineForDh = stripSecondaryPrefix(trimmedLine);
+      const lineForDh = stripSecondaryPrefixWith(trimmedLine, secondaryPrefixRe);
       if (DEBUG) console.log(`  🔍 lineForDh='${lineForDh}' (after stripSecondaryPrefix)`);
       // For secondary target explicit lines, if stripSecondaryPrefix returns empty, skip this line
       if (explicitSecondaryTarget && !lineForDh.trim()) {
@@ -2609,7 +2708,9 @@ export function runLinkingParser(
       if (DEBUG) console.log(`  🔎 lineForDhExtraction='${lineForDhExtraction}'`);
       // Tosafot ד"ה is capped to 7 words; every other source (Rashi, Gemara, Mishna, etc.) keeps
       // the profile's cap — 12 for ש"ס/תנ"ך as before, 5 for ספרי הלכה.
-      const maxDhWordsForTarget = targetSecondary === 'tosafot' ? 7 : profile.maxDhWords;
+      const secondary = targetSecondary ? secondaryDocs.get(targetSecondary) : undefined;
+      const secondarySeg = targetSecondary ? secondarySegs.get(targetSecondary) ?? null : null;
+      const maxDhWordsForTarget = sources.find(source => source.id === targetSecondary)?.maxDhWords ?? profile.maxDhWords;
       const { dhText, cleanDh, isExplicitDelimiter } = extractDiburHamatchil(lineForDhExtraction, config.diburHamatchilDelimiter, maxDhWordsForTarget, profile);
       if (DEBUG) console.log(`  📌 dhText='${dhText}', cleanDh='${cleanDh}', isExplicitDelimiter=${isExplicitDelimiter}`);
 
@@ -2640,126 +2741,70 @@ export function runLinkingParser(
         (/(?:^|\s)ו?כו'(?:\s|$|[.,:;])/i.test(lineForDhExtraction) || /(?:^|\s)ו?כו'(?:\s|$|[.,:;])/i.test(trimmedLine));
 
       // Search in secondary source if routed (unless it's 'בא"ד', in which case we don't search, we inherit)
-      if (!shouldInheritLine && targetSecondary === 'rashi' && rashiDoc) {
-        if (DEBUG) console.log(`🔍 Searching for Rashi: keyword='${normalizedPrefixLine}', cleanDh='${cleanDh}', lineForDhExtraction='${lineForDhExtraction}'`);
+      if (!shouldInheritLine && secondary) {
+        const { doc: secDoc, idf: secIdf, cache: secCache, source: secSource } = secondary;
+        const secStart = secondarySeg ? secondarySeg.startLine : 1;
+        const secEnd = secondarySeg ? secondarySeg.endLine : secDoc.lines.length;
+        const usedLines = usedLinesOf(secSource.id);
+        if (DEBUG) console.log(`🔍 Searching for ${secSource.label}: keyword='${normalizedPrefixLine}', cleanDh='${cleanDh}', lineForDhExtraction='${lineForDhExtraction}'`);
         if (hasKooSecondary) {
-          if (DEBUG) console.log(`  🎯 Applying First Anchor Priority for Rashi with כו' / וכו'`);
+          if (DEBUG) console.log(`  🎯 Applying First Anchor Priority for ${secSource.label} with כו' / וכו'`);
           secMatchRes = searchPrimaryWithFirstAnchor(
-            rashiDoc.lines,
-            rashiSeg ? rashiSeg.startLine : 1,
-            rashiSeg ? rashiSeg.endLine : rashiDoc.lines.length,
+            secDoc.lines,
+            secStart,
+            secEnd,
             lineForDhExtraction,
-            rashiIdfMap,
+            secIdf,
             prevSecondaryLineNum,
             true,
-            rashiLineCache,
-            12,
-            usedSecondaryLines.rashi
+            secCache,
+            maxDhWordsForTarget,
+            usedLines
           );
         } else {
           secMatchRes = searchLineInDoc(
-            rashiDoc.lines,
-            rashiSeg ? rashiSeg.startLine : 1,
-            rashiSeg ? rashiSeg.endLine : rashiDoc.lines.length,
+            secDoc.lines,
+            secStart,
+            secEnd,
             cleanDh,
             lineForDhExtraction,
             isExplicitDelimiter,
-            rashiIdfMap,
+            secIdf,
             prevSecondaryLineNum,
             true,
-            rashiLineCache,
-            12,
+            secCache,
+            maxDhWordsForTarget,
             0.65,
-            usedSecondaryLines.rashi
+            usedLines
           );
         }
-        if (DEBUG) console.log(`  → Rashi search result: lineNum=${secMatchRes.lineNum}, matchedCount=${secMatchRes.matchedCount}`);
+        if (DEBUG) console.log(`  → ${secSource.label} search result: lineNum=${secMatchRes.lineNum}, matchedCount=${secMatchRes.matchedCount}`);
         matchedSecondaryLineNum = secMatchRes.lineNum;
 
-        // Explicit-reference "stubbornness": if a strict search fails to find a Rashi line
-        // despite an explicit רש"י ד"ה/בד"ה citation, retry with the flexibility ladder
+        // Explicit-reference "stubbornness": if a strict search fails to find the cited line
+        // despite an explicit ד"ה/בד"ה citation, retry with the flexibility ladder
         // before giving up (see attemptFlexibleRetry).
         if (explicitSecondaryTarget && !matchedSecondaryLineNum) {
-          if (DEBUG) console.log(`  🪜 Rashi strict search failed for explicit citation — trying flexibility ladder`);
+          if (DEBUG) console.log(`  🪜 ${secSource.label} strict search failed for explicit citation — trying flexibility ladder`);
           const ladderOutcome = attemptFlexibleRetry(
-            rashiDoc.lines,
-            rashiSeg ? rashiSeg.startLine : 1,
-            rashiSeg ? rashiSeg.endLine : rashiDoc.lines.length,
-            rashiDoc.segments,
+            secDoc.lines,
+            secStart,
+            secEnd,
+            secDoc.segments,
             cleanDh,
             lineForDhExtraction,
             isExplicitDelimiter,
-            rashiIdfMap,
+            secIdf,
             prevSecondaryLineNum,
-            rashiLineCache,
-            12,
-            usedSecondaryLines.rashi
+            secCache,
+            maxDhWordsForTarget,
+            usedLines
           );
           if (ladderOutcome) {
             secMatchRes = ladderOutcome.result;
             matchedSecondaryLineNum = secMatchRes.lineNum;
             secondaryRetryRung = ladderOutcome.rung;
-            if (DEBUG) console.log(`  🪜 Ladder rung ${ladderOutcome.rung} found Rashi line ${matchedSecondaryLineNum}`);
-          }
-        }
-      } else if (!shouldInheritLine && targetSecondary === 'tosafot' && tosafotDoc) {
-        if (DEBUG) console.log(`🔍 Searching for Tosafot: keyword='${normalizedPrefixLine}', cleanDh='${cleanDh}', lineForDhExtraction='${lineForDhExtraction}'`);
-        if (hasKooSecondary) {
-          if (DEBUG) console.log(`  🎯 Applying First Anchor Priority for Tosafot with כו' / וכו'`);
-          secMatchRes = searchPrimaryWithFirstAnchor(
-            tosafotDoc.lines,
-            tosafotSeg ? tosafotSeg.startLine : 1,
-            tosafotSeg ? tosafotSeg.endLine : tosafotDoc.lines.length,
-            lineForDhExtraction,
-            tosafotIdfMap,
-            prevSecondaryLineNum,
-            true,
-            tosafotLineCache,
-            7,
-            usedSecondaryLines.tosafot
-          );
-        } else {
-          secMatchRes = searchLineInDoc(
-            tosafotDoc.lines,
-            tosafotSeg ? tosafotSeg.startLine : 1,
-            tosafotSeg ? tosafotSeg.endLine : tosafotDoc.lines.length,
-            cleanDh,
-            lineForDhExtraction,
-            isExplicitDelimiter,
-            tosafotIdfMap,
-            prevSecondaryLineNum,
-            true,
-            tosafotLineCache,
-            7,
-            0.65,
-            usedSecondaryLines.tosafot
-          );
-        }
-        if (DEBUG) console.log(`  → Tosafot search result: lineNum=${secMatchRes.lineNum}, matchedCount=${secMatchRes.matchedCount}`);
-        matchedSecondaryLineNum = secMatchRes.lineNum;
-
-        // Same "stubbornness" retry as Rashi above.
-        if (explicitSecondaryTarget && !matchedSecondaryLineNum) {
-          if (DEBUG) console.log(`  🪜 Tosafot strict search failed for explicit citation — trying flexibility ladder`);
-          const ladderOutcome = attemptFlexibleRetry(
-            tosafotDoc.lines,
-            tosafotSeg ? tosafotSeg.startLine : 1,
-            tosafotSeg ? tosafotSeg.endLine : tosafotDoc.lines.length,
-            tosafotDoc.segments,
-            cleanDh,
-            lineForDhExtraction,
-            isExplicitDelimiter,
-            tosafotIdfMap,
-            prevSecondaryLineNum,
-            tosafotLineCache,
-            7,
-            usedSecondaryLines.tosafot
-          );
-          if (ladderOutcome) {
-            secMatchRes = ladderOutcome.result;
-            matchedSecondaryLineNum = secMatchRes.lineNum;
-            secondaryRetryRung = ladderOutcome.rung;
-            if (DEBUG) console.log(`  🪜 Ladder rung ${ladderOutcome.rung} found Tosafot line ${matchedSecondaryLineNum}`);
+            if (DEBUG) console.log(`  🪜 Ladder rung ${ladderOutcome.rung} found ${secSource.label} line ${matchedSecondaryLineNum}`);
           }
         }
       }
@@ -2843,7 +2888,7 @@ export function runLinkingParser(
         // Claim this line so no later explicit ד"ה/בד"ה citation in this same commentary
         // segment can resolve to the exact same secondary-source line (see usedSecondaryLines).
         if (targetSecondary) {
-          usedSecondaryLines[targetSecondary].add(matchedSecondaryLineNum);
+          usedLinesOf(targetSecondary).add(matchedSecondaryLineNum);
         }
       }
 
@@ -2853,13 +2898,9 @@ export function runLinkingParser(
           || lastMatchedSrcLineIndex 
           || (srcSeg ? srcSeg.startLine : 1);
         
-        if (targetSecondary === 'rashi' && rashiLinks && rashiLinks.length > 0) {
-           const link = rashiLinks.find(l => l.line_index_1 === matchedSecondaryLineNum);
-           if (link) mappedPrimaryLine = link.line_index_2;
-        } else if (targetSecondary === 'tosafot' && tosafotLinks && tosafotLinks.length > 0) {
-           const link = tosafotLinks.find(l => l.line_index_1 === matchedSecondaryLineNum);
-           if (link) mappedPrimaryLine = link.line_index_2;
-        }
+        const secondaryLinks = targetSecondary ? secondaryDocs.get(targetSecondary)?.links : undefined;
+        const link = secondaryLinks?.find(l => l.line_index_1 === matchedSecondaryLineNum);
+        if (link) mappedPrimaryLine = link.line_index_2;
 
         matchedSourceLineNum = mappedPrimaryLine;
         // mark as inherited only when the source is derived due to a cross-reference fallback,
@@ -2873,16 +2914,14 @@ export function runLinkingParser(
       // Last resort before inheritance. Fires only when NOTHING was found above — see the
       // policy note at the top of this file for what it does and why it has to exist.
       if (!matchedSourceLineNum && !matchedSecondaryLineNum && !shouldInheritLine && !skipForWindowWidth) {
-        const swTargetDoc: 'rashi' | 'tosafot' | 'primary' =
-          targetSecondary === 'rashi' ? 'rashi' : targetSecondary === 'tosafot' ? 'tosafot' : 'primary';
-        const swDocLines =
-          swTargetDoc === 'rashi' ? rashiDoc?.lines : swTargetDoc === 'tosafot' ? tosafotDoc?.lines : srcDoc.lines;
-        const swCache =
-          swTargetDoc === 'rashi' ? rashiLineCache : swTargetDoc === 'tosafot' ? tosafotLineCache : srcLineCache;
+        const swSecondary = targetSecondary ? secondaryDocs.get(targetSecondary) : undefined;
+        const swTargetDoc = targetSecondary ?? 'primary';
+        const swDocLines = targetSecondary ? swSecondary?.doc.lines : srcDoc.lines;
+        const swCache = targetSecondary ? swSecondary?.cache : srcLineCache;
         // המקור הראשי נסרק בגבולות החלון, כמו כל מסלול אחר שמייצר קישור אליו.
-        const swSeg = swTargetDoc === 'rashi' ? rashiSeg : swTargetDoc === 'tosafot' ? tosafotSeg
+        const swSeg = targetSecondary ? secondarySeg
           : (srcSeg ? { ...srcSeg, startLine: srcStart, endLine: srcEnd } : srcSeg);
-        const swIdf = swTargetDoc === 'rashi' ? rashiIdfMap : swTargetDoc === 'tosafot' ? tosafotIdfMap : srcIdfMap;
+        const swIdf = targetSecondary ? swSecondary?.idf : srcIdfMap;
 
         // The anchor: the opening of the ד"ה, exactly as written — no prefix letters removed.
         const swWords = (cleanDh || normalizeText(lineForDhExtraction)).split(/\s+/).filter(Boolean);
@@ -3020,12 +3059,13 @@ export function runLinkingParser(
         }
 
         const isSecondaryLink = Boolean(targetSecondary);
+        const linkSource = sources.find(source => source.id === targetSecondary);
         if (isSecondaryLink) {
           if (DEBUG) console.log(`🔗 Line ${cLineIdx}: Creating SECONDARY link: targetSecondary=${targetSecondary}, matchedSecondaryLineNum=${matchedSecondaryLineNum}, matchedSourceLineNum=${matchedSourceLineNum}`);
         }
         
         const headerTitle = isSecondaryLink
-          ? (targetSecondary === 'rashi' ? rashiSeg?.headerTitle : tosafotSeg?.headerTitle) || config.targetBookName
+          ? secondarySegs.get(targetSecondary!)?.headerTitle || config.targetBookName
           : srcSeg ? srcSeg.headerTitle : config.targetBookName;
 
         // A line that took its target wholesale from the previous link points at a line in
@@ -3045,18 +3085,18 @@ export function runLinkingParser(
         const heRef = (inheritsReference && prevForRef)
           ? prevForRef.heRef_2
           : isSecondaryLink
-            ? `${getSecondaryBookLabel(targetSecondary!)} - ${headerTitle}`
+            ? `${linkSource!.label} - ${headerTitle}`
             : `${config.targetBookName} - ${headerTitle}`;
         const path_2 = (inheritsReference && prevForRef)
           ? prevForRef.path_2
           : isSecondaryLink
-            ? getSecondaryPath(targetSecondary!, config.targetBookName)
+            ? `${linkSource!.title}.txt`
             : `${config.targetBookName}.txt`;
         const secondaryRef = !isSecondaryLink
           ? undefined
           : (inheritsReference && prevForRef?.secondaryRef)
             ? prevForRef.secondaryRef
-            : `${getSecondaryBookLabel(targetSecondary!)} (${headerTitle})`;
+            : `${linkSource!.label} (${headerTitle})`;
 
         // Which retry-ladder rung (if any) actually produced this link's match — the
         // secondary-source path's rung if this is a secondary link, otherwise the
@@ -3143,7 +3183,7 @@ export function runLinkingParser(
         }));
 
         const targetDocLines = isSecondaryLink
-          ? (targetSecondary === 'rashi' ? rashiDoc?.lines : tosafotDoc?.lines)
+          ? secondaryDocs.get(targetSecondary!)?.doc.lines
           : srcDoc.lines;
         const targetLineText = targetDocLines && targetDocLines[matchedSourceLineNum - 1] ? targetDocLines[matchedSourceLineNum - 1] : '';
         const matchRange = findSourceMatchRange(targetLineText, dhText || cleanDh) || undefined;
@@ -3246,12 +3286,16 @@ export function runLinkingParser(
     }
   }
 
+  const otherSecondaryDocs = [...secondaryDocs].filter(([id]) => id !== 'rashi' && id !== 'tosafot');
   return {
     links,
     commentaryLines: commDoc.lines,
     sourceLines: srcDoc.lines,
-    rashiLines: rashiDoc?.lines,
-    tosafotLines: tosafotDoc?.lines,
+    rashiLines: secondaryDocs.get('rashi')?.doc.lines,
+    tosafotLines: secondaryDocs.get('tosafot')?.doc.lines,
+    ...(otherSecondaryDocs.length > 0
+      ? { secondaryLines: Object.fromEntries(otherSecondaryDocs.map(([id, d]) => [id, d.doc.lines])) }
+      : {}),
     dhHighlights
   };
 }
@@ -3771,7 +3815,7 @@ export function sanitizeSessionMarkup(session: SessionState): SessionState {
     // with no ד"ה has nothing to recompute from.
     if (!link.matchRange || !link.dhText) return link;
     const targetLines = link.secondaryTarget
-      ? (link.secondaryTarget === 'rashi' ? rashiLines : tosafotLines)
+      ? secondaryLinesOf({ rashiLines, tosafotLines, secondaryLines: session.secondaryLines }, link.secondaryTarget)
       : sourceLines;
     const targetLineIdx1 = link.secondaryTarget
       ? (link.secondary_line_index ?? link.line_index_2)

@@ -3,6 +3,7 @@ import { BookNode, PluginConfig, TANAKH_BOOKS, SHAS_TRACTATES, HALACHA_BOOKS } f
 import { MOCK_LIBRARY_TREE } from '../data/otzariaLibraryMock';
 import { fetchLibraryTree, fetchBookContent, fetchBookLinks, notifyError, notifySuccess, saveToCache, getFromCache, removeFromCache } from '../utils/otzariaBridge';
 import { loadGsDictionary } from '../utils/gsDictionary';
+import { secondarySourcesFor } from '../utils/parserAlgorithm';
 import { AbbreviationsModal } from './AbbreviationsModal';
 import { ToggleSwitch } from './ToggleSwitch';
 import {
@@ -33,7 +34,8 @@ interface SetupModeProps {
     rashiText?: string,
     tosafotText?: string,
     rashiLinks?: any[],
-    tosafotLinks?: any[]
+    tosafotLinks?: any[],
+    secondaries?: Record<string, { text?: string; links?: any[] }>
   ) => void;
 }
 
@@ -362,10 +364,9 @@ export const SetupMode: React.FC<SetupModeProps> = ({ onRunAlgorithm }) => {
       let tosafotText: string | undefined = undefined;
       let rashiLinks: any[] = [];
       let tosafotLinks: any[] = [];
+      const secondaries: Record<string, { text?: string; links?: any[] }> = {};
 
-      // Fetch secondary source files (Rashi and Tosafot for target book if available).
-      // בקטגוריית הלכה אין מקורות משניים — הקישורים מצביעים על השו"ע עצמו בלבד — ולכן
-      // אין טעם לחפש "רש"י על שולחן ערוך" בספרייה.
+      // Secondary books: Rashi and Tosafot for Shas/Tanakh, the part's נושאי כלים for halacha.
       if (category !== 'halacha') {
         try {
           const rashiVariants = getSecondaryBookVariants(targetBook, 'rashi');
@@ -387,6 +388,15 @@ export const SetupMode: React.FC<SetupModeProps> = ({ onRunAlgorithm }) => {
           }
         } catch {
           tosafotText = undefined;
+        }
+      } else {
+        for (const source of secondarySourcesFor({ sourceCategory: category, targetBookName: targetBook })) {
+          try {
+            const result = await tryFetchSecondarySource([source.title]);
+            if (result.text) secondaries[source.id] = result;
+          } catch {
+            // ספר שלא נטען פשוט אינו מנותב
+          }
         }
       }
 
@@ -415,7 +425,8 @@ export const SetupMode: React.FC<SetupModeProps> = ({ onRunAlgorithm }) => {
         rashiText,
         tosafotText,
         rashiLinks,
-        tosafotLinks
+        tosafotLinks,
+        secondaries
       );
     } catch (err) {
       console.error(err);

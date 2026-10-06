@@ -55,11 +55,18 @@ def read_array(name):
     return re.findall(r'"([^"]+)"', block.group(1))
 
 
+def commentator_titles():
+    # The נושאי כלים the generator bakes (COMMENTATOR_NODES in scripts/generate-sefaria-refs.mjs).
+    src = open(os.path.join(ROOT, 'scripts', 'generate-sefaria-refs.mjs'), encoding='utf-8').read()
+    block = re.search(r'const COMMENTATOR_NODES = \{([\s\S]*?)\n\};', src)
+    return re.findall(r"^  '([^']+)': \[", block.group(1), re.M)
+
+
 def main():
     if not os.path.exists(DB):
         sys.exit(f'library database not found at {DB}; set OTZARIA_DB')
     shas, tanakh, halacha = read_array('SHAS_TRACTATES'), read_array('TANAKH_BOOKS'), read_array('HALACHA_BOOKS')
-    titles = [RASHI + t for t in shas + tanakh] + [TOSAFOT + t for t in shas] + halacha
+    titles = [RASHI + t for t in shas + tanakh] + [TOSAFOT + t for t in shas] + halacha + commentator_titles()
 
     db = sqlite3.connect(f'file:{DB}?mode=ro', uri=True)
     dicts = {}

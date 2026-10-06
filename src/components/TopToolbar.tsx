@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
 import { Save, FolderOpen, Download, ArrowLeftRight, RotateCcw, ListTree, Filter, Menu } from 'lucide-react';
 import JSZip from 'jszip';
-import { SessionState, OtzariaLink } from '../types';
-import { formatLineWithDH, parseDocumentSegments, normalizeText, findMatchingSegment, isLinkableContentLine, findFirstAlignedSegmentIndex } from '../utils/parserAlgorithm';
+import { SessionState } from '../types';
+import { formatLineWithDH, parseDocumentSegments, normalizeText, findMatchingSegment, isLinkableContentLine, findFirstAlignedSegmentIndex, allSecondaryLines, secondarySourcesFor } from '../utils/parserAlgorithm';
 import { profileForConfig } from '../utils/halachaAlgorithm';
-import { mirrorGemaraLine, hasMirrorData } from '../utils/shasMirror';
-import { resolveSefariaRef, isSefariaOwnedTarget, isSefariaOwnedCommentary, titleOfPath } from '../utils/sefariaRefs';
+import { buildLinkRecords, LinkRecord } from '../utils/exportLinks';
+import { isSefariaOwnedCommentary } from '../utils/sefariaRefs';
 import { getWordSimilarity } from '../utils/fuzzyUtils';
 import { calculateDocumentIdfWeights, getCombinedWordWeight } from '../utils/wordWeights';
 import { notifySuccess, notifyError } from '../utils/otzariaBridge';
@@ -56,66 +56,14 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
       const exportProfile = profileForConfig(session.config);
       const commDoc = parseDocumentSegments(session.commentaryLines.join('\n'), exportProfile);
       const srcDoc = parseDocumentSegments(session.sourceLines.join('\n'), exportProfile);
-      const rashiDoc = session.rashiLines ? parseDocumentSegments(session.rashiLines.join('\n'), exportProfile) : null;
-      const tosafotDoc = session.tosafotLines ? parseDocumentSegments(session.tosafotLines.join('\n'), exportProfile) : null;
+      const secondaryDocs = allSecondaryLines(session).map(([id, lines]) => ({
+        label: secondarySourcesFor(session.config).find(source => source.id === id)?.label ?? id,
+        lines,
+        doc: parseDocumentSegments(lines.join('\n'), exportProfile)
+      }));
 
-      // 1. Generate _links.json — the file otzaria-library imports, named after the book that owns
-      // line_index_1. "source" declares the target as this commentary's base; the library stores it
-      // as base → commentary, so no reverse files are needed. A Sefaria-owned target must carry
-      // ref_2 (src/utils/sefariaRefs.ts), any other target must not.
-      const misses = { header: 0, changed: 0, unaddressed: 0, mirror: 0 };
-      const linkRecord = (lineIndex1: number, lineIndex2: number, heRef2: string, path2: string, targetLines?: string[], isMirror = false) => {
-        const title = titleOfPath(path2);
-        if (!isSefariaOwnedTarget(title)) {
-          return { line_index_1: lineIndex1, line_index_2: lineIndex2, heRef_2: heRef2, path_2: path2, 'Conection Type': 'source' };
-        }
-        const sefaria = resolveSefariaRef(title, lineIndex2, targetLines);
-        if (typeof sefaria === 'string') {
-          misses[isMirror ? 'mirror' : sefaria]++;
-          return null;
-        }
-        return {
-          line_index_1: lineIndex1,
-          line_index_2: lineIndex2,
-          heRef_2: sefaria.heRef,
-          ref_2: sefaria.ref,
-          path_2: path2,
-          'Conection Type': 'source'
-        };
-      };
-
-      const targetLinesOf = (link: OtzariaLink) =>
-        link.secondaryTarget === 'rashi' ? session.rashiLines
-          : link.secondaryTarget === 'tosafot' ? session.tosafotLines
-            : session.sourceLines;
-
-      // Mirror row — a commentary line that links to רש"י/תוספות also hangs off the gemara line
-      // that comment is on. The engine never computes it; it is Otzaria's own library link, baked
-      // into src/data/shasMirrorTable.ts. For a secondary link line_index_2 is a line in רש"י/תוספות,
-      // which is exactly what the table is keyed by.
-      const tractate = session.config.targetBookName;
-      const withMirror = session.config.sourceCategory === 'shas' && hasMirrorData(tractate);
-      const mirrorRecord = (link: OtzariaLink) => {
-        const series = link.secondaryTarget;
-        if (!withMirror || (series !== 'rashi' && series !== 'tosafot')) return null;
-        // Coverage is whatever the library's own links cover — a miss is a row to skip.
-        const gemaraLine = mirrorGemaraLine(tractate, series, link.line_index_2);
-        return gemaraLine ? linkRecord(link.line_index_1, gemaraLine, tractate, `${tractate}.txt`, session.sourceLines, true) : null;
-      };
-
-      const linkRecords = session.links
-        .flatMap(link => [
-          linkRecord(link.line_index_1, link.line_index_2, link.heRef_2, link.path_2, targetLinesOf(link)),
-          mirrorRecord(link)
-        ])
-        .filter(record => record !== null);
-      const seen = new Set<string>();
-      const exportedLinks = linkRecords.filter(record => {
-        const key = `${record.line_index_1}|${record.line_index_2}|${record.path_2}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
+      // 1. Generate _links.json — the file otzaria-library imports (see buildLinkRecords).
+      const { records: exportedLinks, misses } = buildLinkRecords(session);
 
       // The library rejects a BOM, CR, and more than one trailing LF.
       zip.file(`${entryName}_links.json`, JSON.stringify(exportedLinks, null, 2) + '\n');
@@ -132,7 +80,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
       };
 
       const csvRows = exportedLinks.map(record => csvHeaders
-        .map(header => escapeCsv((record as Record<string, unknown>)[header]))
+        .map(header => escapeCsv(record[header as keyof LinkRecord]))
         .join(','));
 
       const csvContent = '\uFEFF' + [csvHeaders.join(','), ...csvRows].join('\r\n');
@@ -230,7 +178,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
       // 4. Generate unlinked lines folder
       const linkedLineIndices = new Set(session.links.map(l => l.line_index_1));
       
-      // exportProfile / commDoc / srcDoc / rashiDoc / tosafotDoc are parsed at the top of this
+      // exportProfile / commDoc / srcDoc / secondaryDocs are parsed at the top of this
       // function. It is the same source profile the engine ran with, so this report splits the
       // document into exactly the segments the engine did — otherwise a numbered line written
       // as a header line would vanish from the report.
@@ -240,16 +188,14 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
       // never searched by the parser, so it is not reported here as lines that failed to link.
       const firstAlignedSegIdx = findFirstAlignedSegmentIndex(commDoc.segments, [
         srcDoc.segments,
-        rashiDoc ? rashiDoc.segments : null,
-        tosafotDoc ? tosafotDoc.segments : null
+        ...secondaryDocs.map(d => d.doc.segments)
       ]);
 
       if (unlinkedFolder) {
         commDoc.segments.forEach((commSeg, segIdx) => {
           if (firstAlignedSegIdx > 0 && segIdx < firstAlignedSegIdx) return;
           const srcSeg = findMatchingSegment(srcDoc.segments, commSeg.headerTitle);
-          const rashiSeg = rashiDoc ? findMatchingSegment(rashiDoc.segments, commSeg.headerTitle) : null;
-          const tosafotSeg = tosafotDoc ? findMatchingSegment(tosafotDoc.segments, commSeg.headerTitle) : null;
+          const secondarySegs = secondaryDocs.map(d => ({ ...d, seg: findMatchingSegment(d.doc.segments, commSeg.headerTitle) }));
           
           for (let i = commSeg.startLine; i <= commSeg.endLine; i++) {
             if (i > session.commentaryLines.length) break;
@@ -267,14 +213,10 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
                 content += session.sourceLines.slice(srcSeg.startLine - 1, srcSeg.endLine).join('\n') + '\n\n';
               }
               
-              if (rashiSeg && session.rashiLines) {
-                content += `--- רש"י ---\n`;
-                content += session.rashiLines.slice(rashiSeg.startLine - 1, rashiSeg.endLine).join('\n') + '\n\n';
-              }
-              
-              if (tosafotSeg && session.tosafotLines) {
-                content += `--- תוספות ---\n`;
-                content += session.tosafotLines.slice(tosafotSeg.startLine - 1, tosafotSeg.endLine).join('\n') + '\n\n';
+              for (const { label, lines, seg } of secondarySegs) {
+                if (!seg) continue;
+                content += `--- ${label} ---\n`;
+                content += lines.slice(seg.startLine - 1, seg.endLine).join('\n') + '\n\n';
               }
               
               const safeHeaderTitle = commSeg.headerTitle.replace(/[/\\?%*:|"<>]/g, '_').substring(0, 30).trim();
@@ -298,7 +240,7 @@ export const TopToolbar: React.FC<TopToolbarProps> = ({
       const warnings: string[] = [];
       if (misses.changed) warnings.push(`${misses.changed} קישורים לא יוצאו כי הקטע שלהם בספר היעד שונה בספרייה, והפניית ספריא שלהם אינה ודאית`);
       if (misses.unaddressed) warnings.push(`${misses.unaddressed} קישורים לא יוצאו כי לשורת היעד שלהם אין הפניה בספריא`);
-      if (misses.mirror) warnings.push(`${misses.mirror} קישורי מראה לגמרא לא יוצאו כי לשורת הגמרא אין הפניה בספריא`);
+      if (misses.mirror) warnings.push(`${misses.mirror} קישורי מראה לספר הבסיס לא יוצאו כי לשורת הבסיס אין הפניה בספריא`);
       if (misses.header) warnings.push(`${misses.header} קישורים לשורת כותרת לא יוצאו (הספרייה מדלגת עליהם בכל מקרה)`);
       if (isSefariaOwnedCommentary(session.commentaryTitle)) {
         warnings.push(`"${session.commentaryTitle}" קיים בספריא, וקישורים ממנו דורשים ref_1 שהתוסף אינו מייצא — הסנכרון של הספרייה עלול לדחות את הקובץ`);

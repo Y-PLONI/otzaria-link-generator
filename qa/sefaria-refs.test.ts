@@ -170,6 +170,10 @@ if (!db) {
     const parts = heRef.replace(/״/g, '"').split(',').map(p => p.trim());
     let cut = parts.length;
     while (cut > 1 && numeric.test(parts[cut - 1])) cut--;
+    // A node name may itself read as a number (הקדמה): take the longest head the map knows.
+    for (let known = parts.length - 1; known > cut; known--) {
+      if (enOf(parts.slice(0, known).join(', '))) { cut = known; break; }
+    }
     const en = enOf(parts.slice(0, cut).join(', '));
     if (!en) return undefined;
     const nums = parts.slice(cut).map((p, i) => {
@@ -187,11 +191,49 @@ if (!db) {
     [`${EH}, סדר חליצה`]: 'Shulchan Arukh, Even HaEzer, Seder Halitzah,  ',
     'שולחן ערוך, חושן משפט': 'Shulchan Arukh, Choshen Mishpat ',
   };
+  // נושאי הכלים, כל צומת בספר בנפרד (בית שמואל: מדור השמות אינו ממופה, ולכן אין לו ref_2)
+  const SA = 'שולחן ערוך ';
+  const COMMENTATOR_EN: Record<string, string> = {
+    'מגן אברהם': 'Magen Avraham,  ',
+    'מגן אברהם, הקדמת בן המחבר': "Magen Avraham, An Introduction by the Author's Son,  ",
+    'משנה ברורה': 'Mishnah Berurah,  ',
+    'משנה ברורה, הקדמה': 'Mishnah Berurah, Introduction,  ',
+    'משנה ברורה, הקדמה להלכות שבת': 'Mishnah Berurah, Introduction to the Laws of Shabbat,  ',
+    'ביאור הלכה': 'Biur Halacha ',
+    'חלקת מחוקק': 'Chelkat Mechokek ',
+    'בית שמואל': 'Beit Shmuel,  ',
+    'באר היטב אורח חיים': "Ba'er Hetev on Shulchan Arukh, Orach Chayim ",
+    'באר היטב יורה דעה': "Ba'er Hetev on Shulchan Arukh, Yoreh De'ah ",
+    'באר היטב אבן העזר': "Ba'er Hetev on Shulchan Arukh, Even HaEzer,  ",
+    'באר היטב אבן העזר, סדר חליצה': "Ba'er Hetev on Shulchan Arukh, Even HaEzer, Seder Halitzah,  ",
+    'באר היטב חשן משפט': "Ba'er Hetev on Shulchan Arukh, Choshen Mishpat ",
+    [`טורי זהב על ${SA}אורח חיים`]: 'Turei Zahav on Shulchan Arukh, Orach Chayim ',
+    [`טורי זהב על ${SA}יורה דעה`]: "Turei Zahav on Shulchan Arukh, Yoreh De'ah ",
+    [`טורי זהב על ${SA}אבן העזר`]: 'Turei Zahav on Shulchan Arukh, Even HaEzer,  ',
+    [`טורי זהב על ${SA}אבן העזר, שמות אנשים ונשים`]: "Turei Zahav on Shulchan Arukh, Even HaEzer, Shemot Anashim V'Nashim,  ",
+    [`טורי זהב על ${SA}אבן העזר, סדר הגט`]: 'Turei Zahav on Shulchan Arukh, Even HaEzer, Seder HaGet,  ',
+    [`טורי זהב על ${SA}חושן משפט`]: 'Turei Zahav on Shulchan Arukh, Choshen Mishpat ',
+    [`שפתי כהן על ${SA}יורה דעה`]: "Siftei Kohen on Shulchan Arukh, Yoreh De'ah,  ",
+    [`שפתי כהן על ${SA}יורה דעה, דיני ספק ספקא בקצרה`]: "Siftei Kohen on Shulchan Arukh, Yoreh De'ah, S'fek S'feka Summary,  ",
+    [`שפתי כהן על ${SA}חושן משפט`]: 'Siftei Kohen on Shulchan Arukh, Choshen Mishpat,  ',
+    [`שפתי כהן על ${SA}חושן משפט, דיני מיגו`]: 'Siftei Kohen on Shulchan Arukh, Choshen Mishpat, Dinei Migo,  ',
+    [`פתחי תשובה על ${SA}יורה דעה`]: "Pitchei Teshuva on Shulchan Arukh, Yoreh De'ah ",
+    [`פתחי תשובה על ${SA}אבן העזר`]: 'Pitchei Teshuva on Shulchan Arukh, Even HaEzer,  ',
+    [`פתחי תשובה על ${SA}אבן העזר, שמות אנשים ונשים`]: "Pitchei Teshuva on Shulchan Arukh, Even HaEzer, Shemot Anashim V'Nashim,  ",
+    [`פתחי תשובה על ${SA}אבן העזר, סדר הגט`]: 'Pitchei Teshuva on Shulchan Arukh, Even HaEzer, Seder HaGet,  ',
+    [`פתחי תשובה על ${SA}אבן העזר, סדר חליצה`]: 'Pitchei Teshuva on Shulchan Arukh, Even HaEzer, Seder Halitzah,  ',
+    [`פתחי תשובה על ${SA}חושן משפט`]: 'Pitchei Teshuva on Shulchan Arukh, Choshen Mishpat,  ',
+    [`פתחי תשובה על ${SA}חושן משפט, כללי תפיסה`]: 'Pitchei Teshuva on Shulchan Arukh, Choshen Mishpat, Klalei Tefisa,  ',
+    [`פתחי תשובה על ${SA}חושן משפט, דיני מיגו`]: 'Pitchei Teshuva on Shulchan Arukh, Choshen Mishpat, Dinei Migo,  ',
+    [`מאירת עיניים על ${SA}חושן משפט`]: "Me'irat Einayim on Shulchan Arukh, Choshen Mishpat ",
+    [`קצות החושן על ${SA}חושן משפט`]: 'Ketzot HaChoshen on Shulchan Arukh, Choshen Mishpat ',
+  };
   const RASHI = 'רש"י על ', TOSAFOT = 'תוספות על ';
   const enOfTitle = (heHead: string): string | undefined => {
     if (GEMARA_EN[heHead]) return `${GEMARA_EN[heHead]} `;
     if (TANAKH_EN[heHead]) return `${TANAKH_EN[heHead]} `;
     if (HALACHA_EN[heHead]) return HALACHA_EN[heHead];
+    if (COMMENTATOR_EN[heHead]) return COMMENTATOR_EN[heHead];
     for (const [series, en] of [[RASHI, 'Rashi on '], [TOSAFOT, 'Tosafot on ']]) {
       if (heHead.startsWith(series)) {
         const base = GEMARA_EN[heHead.slice(series.length)] || TANAKH_EN[heHead.slice(series.length)];

@@ -63,6 +63,67 @@ const HALACHA_NODES = {
   'שולחן ערוך, חושן משפט': [['', 'Shulchan Arukh, Choshen Mishpat ']],
 };
 
+/**
+ * The נושאי כלים of src/data/halachaCommentators.ts -> their nodes, as above. A node whose English
+ * prefix is null is not mapped to Sefaria: its lines get no ref_2, and a link to one is not exported.
+ */
+const COMMENTATOR_NODES = {
+  'מגן אברהם': [['', 'Magen Avraham,  '], ['הקדמת בן המחבר', "Magen Avraham, An Introduction by the Author's Son,  "]],
+  'טורי זהב על שולחן ערוך אורח חיים': [['', 'Turei Zahav on Shulchan Arukh, Orach Chayim ']],
+  'באר היטב אורח חיים': [['', "Ba'er Hetev on Shulchan Arukh, Orach Chayim "]],
+  'משנה ברורה': [
+    ['', 'Mishnah Berurah,  '],
+    ['הקדמה', 'Mishnah Berurah, Introduction,  '],
+    ['הקדמה להלכות שבת', 'Mishnah Berurah, Introduction to the Laws of Shabbat,  '],
+  ],
+  'ביאור הלכה': [['', 'Biur Halacha ']],
+  'שפתי כהן על שולחן ערוך יורה דעה': [
+    ['', "Siftei Kohen on Shulchan Arukh, Yoreh De'ah,  "],
+    ['דיני ספק ספקא בקצרה', "Siftei Kohen on Shulchan Arukh, Yoreh De'ah, S'fek S'feka Summary,  "],
+  ],
+  'טורי זהב על שולחן ערוך יורה דעה': [['', "Turei Zahav on Shulchan Arukh, Yoreh De'ah "]],
+  'באר היטב יורה דעה': [['', "Ba'er Hetev on Shulchan Arukh, Yoreh De'ah "]],
+  'פתחי תשובה על שולחן ערוך יורה דעה': [['', "Pitchei Teshuva on Shulchan Arukh, Yoreh De'ah "]],
+  'חלקת מחוקק': [['', 'Chelkat Mechokek ']],
+  // מדור השמות של בית שמואל: אין התאמה ודאית בין שמות הצמתים לספריא
+  'בית שמואל': [
+    ['', 'Beit Shmuel,  '],
+    ['בית שמואל שמות אנשים ונשים הקדמה', null],
+    ['בית שמואל שמות אנשים ונשים שמות אנשים', null],
+    ['בית שמואל שמות אנשים ונשים שמות נשים', null],
+    ['בית שמואל שמות אנשים ונשים שמות עיירות ונהרות', null],
+    ['בית שמואל שמות אנשים ונשים כללים', null],
+  ],
+  'טורי זהב על שולחן ערוך אבן העזר': [
+    ['', 'Turei Zahav on Shulchan Arukh, Even HaEzer,  '],
+    ['שמות אנשים ונשים', "Turei Zahav on Shulchan Arukh, Even HaEzer, Shemot Anashim V'Nashim,  "],
+    ['סדר הגט', 'Turei Zahav on Shulchan Arukh, Even HaEzer, Seder HaGet,  '],
+  ],
+  'באר היטב אבן העזר': [
+    ['', "Ba'er Hetev on Shulchan Arukh, Even HaEzer,  "],
+    ['סדר חליצה', "Ba'er Hetev on Shulchan Arukh, Even HaEzer, Seder Halitzah,  "],
+  ],
+  'פתחי תשובה על שולחן ערוך אבן העזר': [
+    ['', 'Pitchei Teshuva on Shulchan Arukh, Even HaEzer,  '],
+    ['שמות אנשים ונשים', "Pitchei Teshuva on Shulchan Arukh, Even HaEzer, Shemot Anashim V'Nashim,  "],
+    ['סדר הגט', 'Pitchei Teshuva on Shulchan Arukh, Even HaEzer, Seder HaGet,  '],
+    ['סדר חליצה', 'Pitchei Teshuva on Shulchan Arukh, Even HaEzer, Seder Halitzah,  '],
+  ],
+  'מאירת עיניים על שולחן ערוך חושן משפט': [['', "Me'irat Einayim on Shulchan Arukh, Choshen Mishpat "]],
+  'שפתי כהן על שולחן ערוך חושן משפט': [
+    ['', 'Siftei Kohen on Shulchan Arukh, Choshen Mishpat,  '],
+    ['דיני מיגו', 'Siftei Kohen on Shulchan Arukh, Choshen Mishpat, Dinei Migo,  '],
+  ],
+  'טורי זהב על שולחן ערוך חושן משפט': [['', 'Turei Zahav on Shulchan Arukh, Choshen Mishpat ']],
+  'באר היטב חשן משפט': [['', "Ba'er Hetev on Shulchan Arukh, Choshen Mishpat "]],
+  'פתחי תשובה על שולחן ערוך חושן משפט': [
+    ['', 'Pitchei Teshuva on Shulchan Arukh, Choshen Mishpat,  '],
+    ['כללי תפיסה', 'Pitchei Teshuva on Shulchan Arukh, Choshen Mishpat, Klalei Tefisa,  '],
+    ['דיני מיגו', 'Pitchei Teshuva on Shulchan Arukh, Choshen Mishpat, Dinei Migo,  '],
+  ],
+  'קצות החושן על שולחן ערוך חושן משפט': [['', 'Ketzot HaChoshen on Shulchan Arukh, Choshen Mishpat ']],
+};
+
 function readArray(file, name) {
   const src = fs.readFileSync(file, 'utf8');
   const block = src.match(new RegExp(`${name}\\s*=\\s*\\[([\\s\\S]*?)\\]`));
@@ -259,6 +320,11 @@ for (const t of HALACHA) {
   if (!HALACHA_NODES[t]) { errors.push(`${t}: no Sefaria nodes declared in this script`); continue; }
   books.push({ title: t, nodes: HALACHA_NODES[t], isDaf: false });
 }
+for (const [title, nodes] of Object.entries(COMMENTATOR_NODES)) {
+  // Unmapped nodes go last, so the addressed ones keep their indices in the emitted table.
+  if (nodes.some(([, en], i) => !en && nodes.slice(i).some(([, later]) => later))) errors.push(`${title}: unmapped nodes must come last`);
+  books.push({ title, nodes, isDaf: false });
+}
 
 const table = [];
 let totalLines = 0;
@@ -268,7 +334,7 @@ for (const book of books) {
   if (!heTitles.has(book.title)) { console.log(`sefaria-refs: skip ${book.title} (not a Sefaria title)`); continue; }
   const meta = findBook.get(book.title);
   if (!meta) { console.log(`sefaria-refs: skip ${book.title} (not in the library)`); continue; }
-  for (const [, en] of book.nodes) checkPrefix(en, book.title);
+  for (const [, en] of book.nodes) if (en) checkPrefix(en, book.title);
 
   const rows = readRefs.all(meta.id);
   if (rows.length !== meta.totalLines || rows.some((r, i) => r.lineIndex !== i)) {
@@ -282,6 +348,7 @@ for (const book of books) {
     // The longest head first: a node's name follows the book's own.
     const order = heads.map((h, i) => i).sort((x, y) => heads[y].length - heads[x].length);
     const node = order.find(i => ref.startsWith(heads[i]));
+    if (node !== undefined && !book.nodes[node][1]) return null;
     const address = node === undefined ? null : parseAddress(ref.slice(heads[node].length).split(','), book.isDaf);
     if (!address) { errors.push(`${book.title}: cannot parse heRef ${heRef}`); return null; }
     return { node, address };
@@ -312,7 +379,8 @@ for (const book of books) {
     || JSON.stringify(roundSegments) !== JSON.stringify(segments)) {
     throw new Error(`${book.title}: round-trip mismatch`);
   }
-  const nodes = book.nodes.map(([name, en]) => [en, name ? `${book.title}, ${name} ` : `${book.title} `, book.isDaf ? 1 : 0]);
+  const nodes = book.nodes.filter(([, en]) => en)
+    .map(([name, en]) => [en, name ? `${book.title}, ${name} ` : `${book.title} `, book.isDaf ? 1 : 0]);
   table.push({ title: book.title, nodes, refs });
   totalLines += rows.length;
   totalRefs += lines.filter(Boolean).length;

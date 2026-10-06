@@ -1,7 +1,8 @@
 /**
  * Builds src/data/shasMirrorTable.ts — the commentary→gemara line map used to emit the
  * "mirror" links in the export (a link that points at רש"י/תוספות also gets the gemara
- * line it hangs off, which the UI never shows).
+ * line it hangs off, which the UI never shows) — and src/data/halachaMirrorTable.ts, the same
+ * map from each נושא כלים to its part of the Shulchan Arukh.
  *
  *   node scripts/generate-shas-mirror.mjs
  *
@@ -27,6 +28,7 @@ import path from 'node:path';
 const projectRoot = process.cwd();
 const inDir = path.join(projectRoot, 'data', 'shas-commentary-links');
 const outFile = path.join(projectRoot, 'src', 'data', 'shasMirrorTable.ts');
+const halachaOutFile = path.join(projectRoot, 'src', 'data', 'halachaMirrorTable.ts');
 const typesFile = path.join(projectRoot, 'src', 'types.ts');
 
 /** commentary book title prefix -> key in the generated table */
@@ -35,15 +37,15 @@ const SERIES = { 'רש"י': 'rashi', 'תוספות': 'tosafot' };
 if (!fs.existsSync(inDir)) {
   const verb = fs.existsSync(outFile) ? 'keeping the committed table' : 'NO TABLE WILL EXIST';
   console.warn(`shas-mirror: ${inDir} not found — ${verb}.`);
-  console.warn('shas-mirror: regenerate it with `node scripts/extract-shas-commentary-links.mjs`.');
+  console.warn('shas-mirror: regenerate it with `node --import tsx scripts/extract-shas-commentary-links.mjs`.');
   process.exit(0);
 }
 
-/** the tractate list the app itself uses — the generated keys must match it exactly */
-function readShasTractates() {
+/** a book list the app itself uses — the generated keys must match it exactly */
+function readTypesArray(name) {
   const src = fs.readFileSync(typesFile, 'utf8');
-  const block = src.match(/SHAS_TRACTATES\s*=\s*\[([\s\S]*?)\]/);
-  if (!block) throw new Error(`SHAS_TRACTATES not found in ${typesFile}`);
+  const block = src.match(new RegExp(`${name}\\s*=\\s*\\[([\\s\\S]*?)\\]`));
+  if (!block) throw new Error(`${name} not found in ${typesFile}`);
   return [...block[1].matchAll(/"([^"]+)"/g)].map(m => m[1]);
 }
 
@@ -79,11 +81,38 @@ function decode(encoded) {
   return map;
 }
 
-const index = JSON.parse(fs.readFileSync(path.join(inDir, 'index.json'), 'utf8'));
-const expected = readShasTractates();
-const table = {};
 let totalPairs = 0;
 let conflicts = 0;
+
+/** One commentary's links, inverted to commentary line -> base line and encoded (self-checked). */
+function encodeCommentary(commentary) {
+  // The extract runs base(source) -> commentary(target); the mirror needs the inverse.
+  const map = new Map();
+  for (const link of commentary.links) {
+    const commentaryLine = link.targetLineIndex + 1;
+    const baseLine = link.sourceLineIndex + 1;
+    // A commentary line carrying two base links keeps the last one — 0.11% of the Shas corpus.
+    if (map.has(commentaryLine) && map.get(commentaryLine) !== baseLine) conflicts++;
+    map.set(commentaryLine, baseLine);
+  }
+
+  const encoded = encode(map);
+  const roundTrip = decode(encoded);
+  if (roundTrip.size !== map.size) {
+    throw new Error(`${commentary.title}: round-trip size ${roundTrip.size} != ${map.size}`);
+  }
+  for (const [line, base] of map) {
+    if (roundTrip.get(line) !== base) {
+      throw new Error(`${commentary.title}: round-trip mismatch at line ${line}`);
+    }
+  }
+  totalPairs += map.size;
+  return encoded;
+}
+
+const index = JSON.parse(fs.readFileSync(path.join(inDir, 'index.json'), 'utf8'));
+const expected = readTypesArray('SHAS_TRACTATES');
+const table = {};
 
 for (const entry of index.tractates) {
   const data = JSON.parse(fs.readFileSync(path.join(inDir, entry.file), 'utf8'));
@@ -92,30 +121,7 @@ for (const entry of index.tractates) {
   for (const commentary of data.commentaries) {
     const key = SERIES[commentary.series];
     if (!key) continue;
-
-    // The extract runs gemara(source) -> commentary(target); the mirror needs the inverse.
-    const map = new Map();
-    for (const link of commentary.links) {
-      const commentaryLine = link.targetLineIndex + 1;
-      const gemaraLine = link.sourceLineIndex + 1;
-      // A commentary line carrying two gemara links keeps the last one — 0.11% of the corpus.
-      if (map.has(commentaryLine) && map.get(commentaryLine) !== gemaraLine) conflicts++;
-      map.set(commentaryLine, gemaraLine);
-    }
-
-    const encoded = encode(map);
-    const roundTrip = decode(encoded);
-    if (roundTrip.size !== map.size) {
-      throw new Error(`${commentary.title}: round-trip size ${roundTrip.size} != ${map.size}`);
-    }
-    for (const [line, gemara] of map) {
-      if (roundTrip.get(line) !== gemara) {
-        throw new Error(`${commentary.title}: round-trip mismatch at line ${line}`);
-      }
-    }
-
-    perTractate[key] = encoded;
-    totalPairs += map.size;
+    perTractate[key] = encodeCommentary(commentary);
   }
 
   table[entry.tractate] = perTractate;
@@ -159,6 +165,47 @@ ${body}
 
 fs.mkdirSync(path.dirname(outFile), { recursive: true });
 fs.writeFileSync(outFile, output, 'utf8');
+
+// ── The Shulchan Arukh: נושא כלים line -> line of its part ──
+const shasPairs = totalPairs;
+const halachaParts = readTypesArray('HALACHA_BOOKS');
+if (!index.halacha) {
+  console.error('shas-mirror: the extract has no Shulchan Arukh parts — re-run scripts/extract-shas-commentary-links.mjs');
+  process.exit(1);
+}
+const halachaTable = {};
+for (const entry of index.halacha) {
+  const data = JSON.parse(fs.readFileSync(path.join(inDir, entry.file), 'utf8'));
+  halachaTable[entry.base] = Object.fromEntries(data.commentaries.map(c => [c.series, encodeCommentary(c)]));
+}
+const missingParts = halachaParts.filter(part => !halachaTable[part]);
+if (missingParts.length) {
+  console.error(`shas-mirror: Shulchan Arukh parts missing from the extract: ${missingParts.join(', ')}`);
+  process.exit(1);
+}
+const halachaBody = halachaParts
+  .map(part => {
+    const series = Object.entries(halachaTable[part])
+      .map(([key, encoded]) => `    ${key}: ${JSON.stringify(encoded)},`)
+      .join('\n');
+    return `  ${JSON.stringify(part)}: {\n${series}\n  },`;
+  })
+  .join('\n');
+const halachaOutput = `/**
+ * GENERATED FILE — do not edit by hand.
+ * Run \`node scripts/generate-shas-mirror.mjs\` (wired into \`npm run build\`).
+ *
+ * נושא כלים line -> line of its Shulchan Arukh part, keyed by the ids of
+ * src/data/halachaCommentators.ts. Same encoding as src/data/shasMirrorTable.ts.
+ *
+ * ${(totalPairs - shasPairs).toLocaleString('en-US')} pairs.
+ */
+export const HALACHA_MIRROR_TABLE: Record<string, Record<string, string>> = {
+${halachaBody}
+};
+`;
+fs.writeFileSync(halachaOutFile, halachaOutput, 'utf8');
+console.log(`shas-mirror: ${(totalPairs - shasPairs).toLocaleString('en-US')} Shulchan Arukh pairs, wrote ${(halachaOutput.length / 1024).toFixed(0)}KB to ${path.relative(projectRoot, halachaOutFile)}`);
 
 console.log(`shas-mirror: ${totalPairs.toLocaleString('en-US')} pairs, ${generated.length} tractates`);
 if (conflicts) console.log(`shas-mirror: ${conflicts} commentary lines had >1 gemara link (last wins)`);

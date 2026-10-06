@@ -7,8 +7,15 @@
  */
 
 import { OtzariaLink } from '../types';
+import { HALACHA_COMMENTATORS } from '../data/halachaCommentators';
 
-export type DropTargetType = 'primary' | 'rashi' | 'tosafot';
+/** 'primary', or the SecondarySource id of the document the line belongs to. */
+export type DropTargetType = string;
+
+const DROP_TARGET_TYPES = new Set([
+  'primary', 'rashi', 'tosafot',
+  ...Object.values(HALACHA_COMMENTATORS).flat().map(c => c.id)
+]);
 
 export interface DragCandidate {
   /** Stable identity used for DOM hit-testing (`data-drop-id`). */
@@ -35,6 +42,8 @@ export interface BuildDragCandidatesParams {
   sourceLines: string[];
   rashiLines?: string[];
   tosafotLines?: string[];
+  /** Further secondary documents (נושאי כלים), offered after Tosafot. */
+  otherSecondaries?: { id: string; label: string; lines: string[] }[];
   /** The link this commentary line currently owns, if any. */
   currentLink?: OtzariaLink;
   targetBookName: string;
@@ -61,7 +70,7 @@ export function parseDropId(id: string | null | undefined): { targetType: DropTa
   const rawType = id.slice(0, separator);
   const rawIndex = id.slice(separator + 1);
 
-  if (rawType !== 'primary' && rawType !== 'rashi' && rawType !== 'tosafot') return null;
+  if (!DROP_TARGET_TYPES.has(rawType)) return null;
   // Strict: `parseInt` alone would accept "3junk", "3.9" or "2:5".
   if (!/^\d+$/.test(rawIndex)) return null;
 
@@ -122,7 +131,7 @@ function resolveCurrentIndex(
 
 /**
  * Builds the ordered list of lines offered as drop targets while dragging
- * commentary line `commLineIdx1`: primary source first, then Rashi, then Tosafot.
+ * commentary line `commLineIdx1`: primary source first, then Rashi, Tosafot and the other secondary books.
  */
 export function buildDragCandidates(params: BuildDragCandidatesParams): DragCandidate[] {
   const {
@@ -131,6 +140,7 @@ export function buildDragCandidates(params: BuildDragCandidatesParams): DragCand
     sourceLines,
     rashiLines,
     tosafotLines,
+    otherSecondaries = [],
     currentLink,
     targetBookName
   } = params;
@@ -168,6 +178,7 @@ export function buildDragCandidates(params: BuildDragCandidatesParams): DragCand
   collect('primary', sourceLines, targetBookName || 'מקור', primaryRadius);
   collect('rashi', rashiLines, 'רש"י', secondaryRadius);
   collect('tosafot', tosafotLines, 'תוספות', secondaryRadius);
+  otherSecondaries.forEach(({ id, label, lines }) => collect(id, lines, label, secondaryRadius));
 
   return candidates;
 }

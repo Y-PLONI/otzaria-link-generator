@@ -27,7 +27,7 @@ Thumbs.db
 qa/data/
 
 # Shas commentary link dump (~31MB) - regenerate with
-# `node scripts/extract-shas-commentary-links.mjs`. It is only the INPUT to
+# `node --import tsx scripts/extract-shas-commentary-links.mjs`. It is only the INPUT to
 # scripts/generate-shas-mirror.mjs; the generated src/data/shasMirrorTable.ts is committed,
 # so a build does not need this directory.
 data/shas-commentary-links/

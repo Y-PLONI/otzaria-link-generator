@@ -195,7 +195,7 @@ dist/com.otzaria.links-generator.otzplugin  1422KB   ← index.html + manifest �
 |---|---|
 | [`scripts/generate-shas-mirror.mjs`](../scripts/generate-shas-mirror.mjs) | חדש. ממיר את `data/shas-commentary-links/` לטבלה, מאמת מול `SHAS_TRACTATES`, ובודק round-trip על כל ערך לפני הכתיבה |
 | [`src/data/shasMirrorTable.ts`](../src/data/shasMirrorTable.ts) | חדש, **מיוצר** — לא לערוך ביד. 288KB |
-| [`src/utils/shasMirror.ts`](../src/utils/shasMirror.ts) | חדש. מפענח, מטמון, `mirrorGemaraLine` ו-`hasMirrorData` |
+| [`src/utils/shasMirror.ts`](../src/utils/shasMirror.ts) | חדש. מפענח, מטמון, `mirrorBaseLine` ו-`hasMirrorData` |
 | [`src/components/TopToolbar.tsx`](../src/components/TopToolbar.tsx) | `handleExportZip` — ארבעת הקבצים החדשים; `commDoc`/`srcDoc` הועלו לראש הפונקציה |
 | [`package.json`](../package.json) | הסקריפט מחובר לשלושת יעדי ה-build |
 
@@ -215,7 +215,7 @@ dist/com.otzaria.links-generator.otzplugin  1422KB   ← index.html + manifest �
 
 ### האינווריאנטה שהמראה נשען עליה
 
-`mirrorGemaraLine` מקבל את `line_index_2` של קישור משני ומניח שהוא שורה **בספר המפרש המשני**. אימתתי את זה על כל מסלולי היצירה ב-`parserAlgorithm`: ציטוט מפורש ([:2841](../src/utils/parserAlgorithm.ts#L2841)), עוגן מילה בודדת, שתי דרכי הירושה ([:2980](../src/utils/parserAlgorithm.ts#L2980), [:3003](../src/utils/parserAlgorithm.ts#L3003)) שמעתיקות `line_index_2` ו-`secondaryTarget` יחד, ויצירה ידנית ([EditMode.tsx:817](../src/components/EditMode.tsx#L817)).
+`mirrorBaseLine` מקבל את `line_index_2` של קישור משני ומניח שהוא שורה **בספר המפרש המשני**. אימתתי את זה על כל מסלולי היצירה ב-`parserAlgorithm`: ציטוט מפורש ([:2841](../src/utils/parserAlgorithm.ts#L2841)), עוגן מילה בודדת, שתי דרכי הירושה ([:2980](../src/utils/parserAlgorithm.ts#L2980), [:3003](../src/utils/parserAlgorithm.ts#L3003)) שמעתיקות `line_index_2` ו-`secondaryTarget` יחד, ויצירה ידנית ([EditMode.tsx:817](../src/components/EditMode.tsx#L817)).
 
 הענף בשורה [2851](../src/utils/parserAlgorithm.ts#L2851) הוא היחיד שמציב שורת גמרא — ותנאי הכניסה שלו הוא `!explicitSecondaryTarget`, בעוד `targetSecondary` נעשה לא-null רק במסלולים שמדליקים גם `explicitSecondaryTarget`. כלומר שם `targetSecondary` הוא null, הקישור יוצא ראשי, והמראה לא נוגע בו. (נגזרת: חיפוש ה-`rashiLinks` בשורות 2856-2862 אינו יכול לפעול כלל — דיון בסעיף 6.)
 
@@ -256,3 +256,25 @@ dist/com.otzaria.links-generator.otzplugin  1422KB   ← index.html + manifest �
 - `_links.csv` מכיל את אותן שורות ואותם שדות.
 
 הבדיקה: [`qa/sefaria-refs.test.ts`](../qa/sefaria-refs.test.ts) — השוואה לקבצי קישורים אמיתיים של הספרייה, מעבר על כל שורות היעדים במסד המקומי, ובדיקת צורה מול רשימת התחיליות של ספריא.
+
+## 10. נושאי הכלים של השו"ע (אישוז #9)
+
+אותו מנגנון חל עכשיו גם בקטגוריית הלכה. "מקור משני" הוא מושג כללי (`SecondarySource` ב-`parserAlgorithm.ts`:
+מזהה, שם תצוגה, שם הספר בספרייה ומילות המפתח), ו-`secondarySourcesFor(config)` מחזיר לש"ס/תנ"ך את רש"י ותוספות
+ולחלק שו"ע את נושאי הכלים שלו מ-`src/data/halachaCommentators.ts`.
+
+- **ניתוב:** שורה שנפתחת בשם נושא כלים ("ש"ך ד"ה…", "במג"א…") מנותבת לספרו, בתוך הסימן התואם. סימן של ש"ך
+  מחולק בכותרות "סעיף", ולכן הסגמנט של ספר משני בהלכה נמשך עד הסימן הבא (`findSecondarySegment`).
+  נושא כלים שלא נטען אינו מנותב כלל, כך שבלעדיהם ההתנהגות בהלכה לא השתנתה.
+- **ייצוא:** הקישור לנושא הכלים יוצא עם ref_2 (כל נושאי הכלים ברשימה הם ספרי ספריא), ונוסף לו קישור מראה
+  לשורת השו"ע — `src/data/halachaMirrorTable.ts`, מאותו חילוץ ובאותו קידוד כטבלת הש"ס. גם "שולחן ערוך, …"
+  הוא כותרת של ספריא, ולכן גם שורת המראה נושאת ref_2.
+- **ref_2:** `scripts/generate-sefaria-refs.mjs` בונה לנושאי הכלים את הטבלה האפויה (`COMMENTATOR_NODES`). מדור
+  השמות של בית שמואל אינו ממופה לספריא, וקישור אליו אינו מיוצא (עם הודעה).
+- **מגבלות:** הפניה לפי מספר ("ש"ך ס"ק ג") אינה מנותבת לפי המספר אלא לפי הד"ה שאחריו. בספרים בני שתי רמות
+  (מג"א, ט"ז, באה"ט, מ"ב, פ"ת, ח"מ, ב"ש, סמ"ע) ס"ק N הוא השורה ה-N מתחת לכותרת הסימן (נבדק מול heRef), כך
+  שהרחבה כזו פשוטה; בש"ך, בביאור הלכה ובקצות החושן הספרייה ממספרת לפי סעיף.
+  שורה שכולה רק שם נושא כלים אינה מזוהה בעורך כתווית מקור (`isBareSourceLabelLine` מכיר רק רש"י/תוספות).
+
+חילוץ מחדש: `node --import tsx scripts/extract-shas-commentary-links.mjs` (קורא את רשימת נושאי הכלים מ-TS), ואז
+`node scripts/generate-shas-mirror.mjs`. בדיקה: `qa/halacha-commentators.test.ts`.

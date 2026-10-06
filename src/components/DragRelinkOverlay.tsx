@@ -51,6 +51,13 @@ const TARGET_ACCENTS: Record<DropTargetType, { chip: string; ring: string; dot: 
   }
 };
 
+/** Any other secondary book (a נושא כלים). */
+const OTHER_SECONDARY_ACCENT = {
+  chip: 'bg-teal-500/25 text-teal-50 border-teal-300/50',
+  ring: 'ring-teal-400',
+  dot: 'bg-teal-400'
+};
+
 export const DragRelinkOverlay: React.FC<DragRelinkOverlayProps> = ({
   commLineIdx,
   commLineHtml,
@@ -148,7 +155,7 @@ export const DragRelinkOverlay: React.FC<DragRelinkOverlayProps> = ({
           className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain pointer-events-auto px-2 pb-2 space-y-2 outline-none"
         >
           {groups.map(group => {
-            const accent = TARGET_ACCENTS[group.targetType];
+            const accent = TARGET_ACCENTS[group.targetType] ?? OTHER_SECONDARY_ACCENT;
             return (
               <div
                 key={group.targetType}

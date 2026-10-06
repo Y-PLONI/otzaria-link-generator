@@ -1,4 +1,5 @@
 import { SHAS_MIRROR_TABLE } from '../data/shasMirrorTable';
+import { HALACHA_MIRROR_TABLE } from '../data/halachaMirrorTable';
 
 /**
  * ── The mirror: the gemara line behind a רש"י/תוספות link ─────────────────────────────
@@ -18,9 +19,13 @@ import { SHAS_MIRROR_TABLE } from '../data/shasMirrorTable';
  *
  * Line numbers are 1-based on both sides, matching OtzariaLink. Tractate keys match
  * SHAS_TRACTATES exactly; the generator fails the build if that ever drifts.
+ *
+ * The same holds for a נושא כלים and its part of the שולחן ערוך (src/data/halachaMirrorTable.ts),
+ * keyed by HALACHA_BOOKS and the SecondarySource ids.
  */
 
-export type MirrorSeries = 'rashi' | 'tosafot';
+/** A SecondarySource id: 'rashi', 'tosafot', or a נושא כלים id. */
+export type MirrorSeries = string;
 
 /** Decoded tables, per `${tractate}/${series}`. Decoding is ~10k slots and runs at most once. */
 const decoded = new Map<string, Map<number, number> | null>();
@@ -44,33 +49,34 @@ function decode(encoded: string): Map<number, number> {
   return map;
 }
 
-function tableFor(tractate: string, series: MirrorSeries): Map<number, number> | null {
-  const cacheKey = `${tractate}/${series}`;
+function tableFor(base: string, series: MirrorSeries): Map<number, number> | null {
+  const cacheKey = `${base}/${series}`;
   const cached = decoded.get(cacheKey);
   if (cached !== undefined) return cached;
 
-  const encoded = SHAS_MIRROR_TABLE[tractate]?.[series];
+  const encoded = (SHAS_MIRROR_TABLE[base] as Record<string, string> | undefined)?.[series]
+    ?? HALACHA_MIRROR_TABLE[base]?.[series];
   const table = encoded ? decode(encoded) : null;
   decoded.set(cacheKey, table);
   return table;
 }
 
-/** True when this book has any mirror data at all — no תנ"ך, no הלכה, and no תמיד. */
-export function hasMirrorData(tractate: string): boolean {
-  const entry = SHAS_MIRROR_TABLE[tractate];
-  return Boolean(entry && (entry.rashi || entry.tosafot));
+/** True when this book has any mirror data at all — no תנ"ך and no תמיד. */
+export function hasMirrorData(base: string): boolean {
+  const entry = SHAS_MIRROR_TABLE[base] ?? HALACHA_MIRROR_TABLE[base];
+  return Boolean(entry && Object.values(entry).some(Boolean));
 }
 
 /**
- * The gemara line a רש"י/תוספות line comments on, or undefined when the library states no
- * link for it. Callers should treat undefined as "no mirror row to emit", not as an error:
- * coverage is whatever Otzaria's own links cover.
+ * The base line (gemara / שו"ע) a secondary line comments on, or undefined when the library
+ * states no link for it. Callers should treat undefined as "no mirror row to emit", not as an
+ * error: coverage is whatever Otzaria's own links cover.
  */
-export function mirrorGemaraLine(
-  tractate: string,
+export function mirrorBaseLine(
+  base: string,
   series: MirrorSeries,
   commentaryLine: number
 ): number | undefined {
   if (!commentaryLine || commentaryLine < 1) return undefined;
-  return tableFor(tractate, series)?.get(commentaryLine);
+  return tableFor(base, series)?.get(commentaryLine);
 }

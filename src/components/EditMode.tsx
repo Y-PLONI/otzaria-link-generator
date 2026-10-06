@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import { SessionState, OtzariaLink } from '../types';
-import { formatLineWithDH, parseDocumentSegments, findLinkingStartLine, isLinkableContentLine } from '../utils/parserAlgorithm';
+import { formatLineWithDH, parseDocumentSegments, findLinkingStartLine, isLinkableContentLine, secondarySourcesFor, secondaryLinesOf } from '../utils/parserAlgorithm';
 import { profileForConfig } from '../utils/halachaAlgorithm';
 import { EditLinkModal } from './EditLinkModal';
 import {
@@ -54,13 +54,22 @@ const getTargetColors = (target?: 'rashi' | 'tosafot' | 'primary' | string) => {
         borderPanel: 'border-purple-100 dark:border-purple-900/30',
         lineStroke: '#a855f7' // purple-500
       };
-    default:
+    case undefined:
+    case 'primary':
       return {
         text: 'text-emerald-700/90 dark:text-emerald-300/90',
         bgTitle: 'bg-emerald-50 dark:bg-emerald-950/50',
         bgPanel: 'bg-emerald-50/40 dark:bg-emerald-950/20',
         borderPanel: 'border-emerald-100 dark:border-emerald-900/30',
         lineStroke: '#10b981' // emerald-500
+      };
+    default:
+      return {
+        text: 'text-teal-700/90 dark:text-teal-300/90',
+        bgTitle: 'bg-teal-50 dark:bg-teal-950/50',
+        bgPanel: 'bg-teal-50/40 dark:bg-teal-950/20',
+        borderPanel: 'border-teal-100 dark:border-teal-900/30',
+        lineStroke: '#14b8a6' // teal-500
       };
   }
 };
@@ -468,6 +477,7 @@ export const EditMode: React.FC<EditModeProps> = ({
       sourceLines: session.sourceLines,
       rashiLines: session.rashiLines,
       tosafotLines: session.tosafotLines,
+      secondaryLines: session.secondaryLines,
       dhHighlights: session.dhHighlights,
       manualInherit: manualInheritSet,
       profile: profileForConfig(session.config)
@@ -485,10 +495,21 @@ export const EditMode: React.FC<EditModeProps> = ({
     sourceLines,
     rashiLines,
     tosafotLines,
+    secondaryLines,
     links,
     dhHighlights = {},
     config
   } = session;
+
+  /** נושאי הכלים שנטענו לסשן, בסדר של secondarySourcesFor. */
+  const otherSecondaries = useMemo(
+    () => secondarySourcesFor(config)
+      .filter(source => secondaryLines?.[source.id])
+      .map(source => ({ id: source.id, label: source.label, lines: secondaryLines![source.id] })),
+    [config.sourceCategory, config.targetBookName, secondaryLines]
+  );
+  const secondaryLabel = (id: string) =>
+    secondarySourcesFor(config).find(source => source.id === id)?.label ?? id;
 
   /**
    * פרופיל המקור של הסשן, כפי שהמנוע בחר אותו. שרשראות הירושה בעורך משחזרות את כללי המנוע,
@@ -579,8 +600,8 @@ export const EditMode: React.FC<EditModeProps> = ({
    * failed to find a source: they are shown plainly, with no warning and no unlinked count.
    */
   const linkingStartLine = useMemo(
-    () => findLinkingStartLine(commentaryLines, sourceLines, rashiLines, tosafotLines, chainProfile),
-    [commentaryLines, sourceLines, rashiLines, tosafotLines, chainProfile]
+    () => findLinkingStartLine(commentaryLines, sourceLines, rashiLines, tosafotLines, chainProfile, otherSecondaries.map(o => o.lines)),
+    [commentaryLines, sourceLines, rashiLines, tosafotLines, chainProfile, otherSecondaries]
   );
   const isFrontMatterLine = useCallback(
     (lineIdx1: number) => lineIdx1 < linkingStartLine,
@@ -687,11 +708,9 @@ export const EditMode: React.FC<EditModeProps> = ({
         let lineMatches = line.toLowerCase().includes(q) || commLineIdx1.toString() === q;
         let targetMatches = false;
         if (link) {
-          const targetLine = link.secondaryTarget === 'rashi' 
-            ? rashiLines[link.secondary_line_index! - 1]
-            : link.secondaryTarget === 'tosafot'
-              ? tosafotLines[link.secondary_line_index! - 1]
-              : sourceLines[link.line_index_2 - 1];
+          const targetLine = link.secondaryTarget
+            ? secondaryLinesOf(session, link.secondaryTarget)?.[link.secondary_line_index! - 1]
+            : sourceLines[link.line_index_2 - 1];
           if (targetLine && targetLine.toLowerCase().includes(q)) targetMatches = true;
         }
         if (!lineMatches && !targetMatches) return;
@@ -722,7 +741,7 @@ export const EditMode: React.FC<EditModeProps> = ({
       commIndices: number[];
       links: (OtzariaLink | undefined)[];
       isUnlinked: boolean;
-      secondaryTarget?: 'rashi' | 'tosafot';
+      secondaryTarget?: string;
       secondaryLineIndex?: number;
       primaryLineIndex?: number;
     }[] = [];
@@ -764,7 +783,7 @@ export const EditMode: React.FC<EditModeProps> = ({
     currentLinks: OtzariaLink[],
     commLineIdx1: number,
     newSourceLineIdx: number | null,
-    secondaryTarget?: 'rashi' | 'tosafot'
+    secondaryTarget?: string
   ): OtzariaLink[] => {
     let updatedLinks = [...currentLinks];
 
@@ -777,17 +796,15 @@ export const EditMode: React.FC<EditModeProps> = ({
       const headerTitle = config.targetBookName;
       const isSecondary = Boolean(secondaryTarget);
 
-      const getSecondaryPath = (sec: 'rashi' | 'tosafot', title: string) =>
-        sec === 'rashi' ? `רש"י על ${title}.txt` : `תוספות על ${title}.txt`;
-      const getSecondaryBookLabel = (sec: 'rashi' | 'tosafot') =>
-        sec === 'rashi' ? 'רש"י' : 'תוספות';
+      const source = secondarySourcesFor(config).find(s => s.id === secondaryTarget);
+      if (isSecondary && !source) return currentLinks;
 
       const path_2 = isSecondary
-        ? getSecondaryPath(secondaryTarget!, config.targetBookName)
+        ? `${source!.title}.txt`
         : `${config.targetBookName}.txt`;
 
       const heRef_2 = isSecondary
-        ? `${getSecondaryBookLabel(secondaryTarget!)} - ${headerTitle}`
+        ? `${source!.label} - ${headerTitle}`
         : `${headerTitle} - שורה ${newSourceLineIdx}`;
 
       // Carry the Dibur Hamatchil over to the new target and re-derive its highlight
@@ -815,7 +832,7 @@ export const EditMode: React.FC<EditModeProps> = ({
         return matchIdx >= 0 ? { candidates, candidateIndex: matchIdx } : {};
       })();
       const targetLines = isSecondary
-        ? (secondaryTarget === 'rashi' ? rashiLines : tosafotLines)
+        ? secondaryLinesOf(session, secondaryTarget)
         : sourceLines;
       const targetText = targetLines?.[newSourceLineIdx - 1] || '';
       const matchRange = dhText && targetText
@@ -830,7 +847,7 @@ export const EditMode: React.FC<EditModeProps> = ({
         connection_type: "commentary",
         secondaryTarget: secondaryTarget,
         secondary_line_index: isSecondary ? newSourceLineIdx : undefined,
-        secondaryRef: isSecondary ? `${getSecondaryBookLabel(secondaryTarget!)} (${headerTitle})` : undefined,
+        secondaryRef: isSecondary ? `${source!.label} (${headerTitle})` : undefined,
         isInherited: false,
         dhText,
         matchRange,
@@ -854,6 +871,7 @@ export const EditMode: React.FC<EditModeProps> = ({
       sourceLines,
       rashiLines,
       tosafotLines,
+      secondaryLines,
       dhHighlights,
       manualInherit: manualInheritSet,
       profile: chainProfile
@@ -868,7 +886,7 @@ export const EditMode: React.FC<EditModeProps> = ({
   const handleSaveLink = (
     commLineIdx1: number,
     newSourceLineIdx: number | null,
-    secondaryTarget?: 'rashi' | 'tosafot'
+    secondaryTarget?: string
   ) => {
     const targets = actionTargets(commLineIdx1);
     const updatedLinks = targets.reduce(
@@ -923,6 +941,7 @@ export const EditMode: React.FC<EditModeProps> = ({
         sourceLines,
         rashiLines,
         tosafotLines,
+        secondaryLines,
         dhHighlights,
         profile: chainProfile
       });
@@ -1004,10 +1023,11 @@ export const EditMode: React.FC<EditModeProps> = ({
       sourceLines,
       rashiLines,
       tosafotLines,
+      otherSecondaries,
       currentLink: links.find(l => l.line_index_1 === commLineIdx1),
       targetBookName: config.targetBookName
     });
-  }, [commentaryLines.length, sourceLines, rashiLines, tosafotLines, links, config.targetBookName]);
+  }, [commentaryLines.length, sourceLines, rashiLines, tosafotLines, otherSecondaries, links, config.targetBookName]);
 
   const handleCommitDrop = useCallback((commLineIdx1: number, dropId: string) => {
     const parsed = parseDropId(dropId);
@@ -1026,7 +1046,7 @@ export const EditMode: React.FC<EditModeProps> = ({
 
     const label = parsed.targetType === 'primary'
       ? config.targetBookName
-      : parsed.targetType === 'rashi' ? 'רש"י' : 'תוספות';
+      : secondaryLabel(parsed.targetType);
     const followerNote = followerCount > 0
       ? `, ועמן ${followerCount} שורות שיורשות את ההקשר ממנה`
       : '';
@@ -1468,7 +1488,7 @@ export const EditMode: React.FC<EditModeProps> = ({
                     <div className={`flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-xs font-bold ${colors.text}`}>
                       {firstLinkObj ? (
                         <span className="truncate">
-                          מקור: {firstLinkObj.secondaryTarget ? (firstLinkObj.secondaryTarget === 'rashi' ? 'רש"י' : 'תוספות') : config.targetBookName} (שורה {firstLinkObj.secondaryTarget ? firstLinkObj.secondary_line_index : firstLinkObj.line_index_2})
+                          מקור: {firstLinkObj.secondaryTarget ? secondaryLabel(firstLinkObj.secondaryTarget) : config.targetBookName} (שורה {firstLinkObj.secondaryTarget ? firstLinkObj.secondary_line_index : firstLinkObj.line_index_2})
                           {(firstLinkObj.secondaryRef || firstLinkObj.heRef_2 || firstLinkObj.path_2) && (
                             <span className="font-medium text-[var(--color-on-surface-variant)]">
                               {' '}· {firstLinkObj.secondaryRef || firstLinkObj.heRef_2 || firstLinkObj.path_2}
@@ -1492,9 +1512,8 @@ export const EditMode: React.FC<EditModeProps> = ({
                     {firstLinkObj ? (
                       <CollapsibleText
                         text={firstLinkObj.secondaryTarget
-                          ? (firstLinkObj.secondaryTarget === 'rashi'
-                              ? ((rashiLines && rashiLines[firstLinkObj.secondary_line_index! - 1]) || `[שורה ${firstLinkObj.secondary_line_index} ברש"י]`)
-                              : ((tosafotLines && tosafotLines[firstLinkObj.secondary_line_index! - 1]) || `[שורה ${firstLinkObj.secondary_line_index} בתוספות]`))
+                          ? (secondaryLinesOf(session, firstLinkObj.secondaryTarget)?.[firstLinkObj.secondary_line_index! - 1]
+                              || `[שורה ${firstLinkObj.secondary_line_index} ב${secondaryLabel(firstLinkObj.secondaryTarget)}]`)
                           : (sourceLines && sourceLines[firstLinkObj.line_index_2 - 1] || '')}
                         isPrimary={!firstLinkObj.secondaryTarget}
                         links={group.links}
@@ -1604,6 +1623,7 @@ export const EditMode: React.FC<EditModeProps> = ({
           commentaryLines={commentaryLines}
           rashiLines={rashiLines}
           tosafotLines={tosafotLines}
+          otherSecondaries={otherSecondaries}
           targetBookName={config.targetBookName}
           isShas={config.sourceCategory === 'shas'}
           profile={chainProfile}
