@@ -35,6 +35,7 @@ import {
   shiftWindowStart,
   windowStartToReveal
 } from '../utils/renderWindow';
+import { normalizeForSearch } from '../utils/searchNormalize';
 import {
   buildInheritanceIndex,
   cascadeInheritedContext,
@@ -681,8 +682,9 @@ export const EditMode: React.FC<EditModeProps> = ({
   const filteredDrawerSegments = useMemo(() => {
     if (!drawerSearchQuery.trim()) return commentarySegments;
     const q = drawerSearchQuery.toLowerCase().trim();
+    const normalizedQ = normalizeForSearch(drawerSearchQuery).trim();
     return commentarySegments.filter(seg =>
-      seg.headerTitle.toLowerCase().includes(q) ||
+      normalizeForSearch(seg.headerTitle).includes(normalizedQ) ||
       `שורות ${seg.startLine}-${seg.endLine}`.includes(q)
     );
   }, [commentarySegments, drawerSearchQuery]);
@@ -705,10 +707,31 @@ export const EditMode: React.FC<EditModeProps> = ({
     }
   };
 
-  
+  // Normalized once per document, and only while a search is active.
+  const isSourceSearchActive = sourceSearchQuery.trim() !== '';
+  const searchableLines = useMemo(() => {
+    if (!isSourceSearchActive) return null;
+    const normalize = (lines?: string[]) => (lines ?? []).map(normalizeForSearch);
+    // A secondary book is normalized on its first lookup; most searches touch only a few.
+    const secondaryCache = new Map<string, string[]>();
+    return {
+      commentary: normalize(commentaryLines),
+      source: normalize(sourceLines),
+      secondary: (id: string) => {
+        let lines = secondaryCache.get(id);
+        if (!lines) {
+          lines = normalize(secondaryLinesOf({ rashiLines, tosafotLines, secondaryLines }, id));
+          secondaryCache.set(id, lines);
+        }
+        return lines;
+      }
+    };
+  }, [isSourceSearchActive, commentaryLines, sourceLines, rashiLines, tosafotLines, secondaryLines]);
+
   const sortedCommentaryIndices = useMemo(() => {
     const indices: number[] = [];
     const q = sourceSearchQuery.toLowerCase().trim();
+    const normalizedQ = normalizeForSearch(sourceSearchQuery).trim();
 
     commentaryLines.forEach((line, idx) => {
       const commLineIdx1 = idx + 1;
@@ -721,14 +744,14 @@ export const EditMode: React.FC<EditModeProps> = ({
 
       const link = linkByLine.get(commLineIdx1);
 
-      if (q) {
-        let lineMatches = line.toLowerCase().includes(q) || commLineIdx1.toString() === q;
+      if (q && searchableLines) {
+        let lineMatches = searchableLines.commentary[idx].includes(normalizedQ) || commLineIdx1.toString() === q;
         let targetMatches = false;
         if (link) {
           const targetLine = link.secondaryTarget
-            ? secondaryLinesOf(session, link.secondaryTarget)?.[link.secondary_line_index! - 1]
-            : sourceLines[link.line_index_2 - 1];
-          if (targetLine && targetLine.toLowerCase().includes(q)) targetMatches = true;
+            ? searchableLines.secondary(link.secondaryTarget)[link.secondary_line_index! - 1]
+            : searchableLines.source[link.line_index_2 - 1];
+          if (targetLine && targetLine.includes(normalizedQ)) targetMatches = true;
         }
         if (!lineMatches && !targetMatches) return;
       }
@@ -750,7 +773,7 @@ export const EditMode: React.FC<EditModeProps> = ({
     }
 
     return indices;
-  }, [commentaryLines, linkByLine, sourceSearchQuery, sortMode, sourceLines, rashiLines, tosafotLines, chainProfile]);
+  }, [commentaryLines, linkByLine, sourceSearchQuery, searchableLines, sortMode, chainProfile]);
 
   const groupedCommentary = useMemo(() => {
     const groups: {

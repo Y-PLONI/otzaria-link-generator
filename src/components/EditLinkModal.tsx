@@ -3,6 +3,7 @@ import { OtzariaLink } from '../types';
 import { X, Check, Trash2, ArrowLeftRight, Search, CheckCircle2, Layers, BookOpen, Bookmark, Filter, ChevronDown } from 'lucide-react';
 import { parseDocumentSegments, findMatchingSegment } from '../utils/parserAlgorithm';
 import { SourceProfile } from '../utils/halachaAlgorithm';
+import { normalizeForSearch } from '../utils/searchNormalize';
 
 interface EditLinkModalProps {
   commLineIndex: number; // 1-based
@@ -160,10 +161,12 @@ export const EditLinkModal: React.FC<EditLinkModalProps> = ({
   };
 
   const currentTabLines = getTabLines();
+  const normalizedTabLines = useMemo(() => currentTabLines.map(normalizeForSearch), [currentTabLines]);
 
   // Filter lines by selected segment & search query
   const filteredLines = useMemo(() => {
     const seg = selectedSegIndex !== 'all' ? currentTabSegments[selectedSegIndex] : null;
+    const normalizedQuery = normalizeForSearch(searchQuery).trim();
 
     return currentTabLines
       .map((text, idx) => ({ text, lineIdx1: idx + 1 }))
@@ -172,11 +175,10 @@ export const EditLinkModal: React.FC<EditLinkModalProps> = ({
           return false;
         }
         if (!searchQuery.trim()) return true;
-        const q = searchQuery.toLowerCase().trim();
-        if (item.lineIdx1.toString() === q) return true;
-        return item.text.toLowerCase().includes(q);
+        if (item.lineIdx1.toString() === searchQuery.toLowerCase().trim()) return true;
+        return normalizedTabLines[item.lineIdx1 - 1].includes(normalizedQuery);
       });
-  }, [currentTabLines, selectedSegIndex, currentTabSegments, searchQuery]);
+  }, [currentTabLines, normalizedTabLines, selectedSegIndex, currentTabSegments, searchQuery]);
 
   // Bring the selected line into view instead of making the user hunt for it down the list.
   // `nearest` keeps a card that is already visible exactly where it is, so plain clicking
