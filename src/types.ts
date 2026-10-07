@@ -20,7 +20,7 @@ export interface OtzariaLink {
   connection_type: "commentary";
   
   // UI and internal routing state
-  secondaryTarget?: 'rashi' | 'tosafot';
+  secondaryTarget?: string;        // SecondarySource id: 'rashi', 'tosafot', or a נושא כלים ('shach'...)
   secondary_line_index?: number;
   secondaryRef?: string;
   isInherited?: boolean;      // True if context was inherited (purple background)
@@ -81,6 +81,7 @@ export interface SessionState {
   sourceLines: string[];          // Primary source physical lines
   rashiLines?: string[];          // Secondary Rashi lines (if Shas)
   tosafotLines?: string[];        // Secondary Tosafot lines (if Shas)
+  secondaryLines?: Record<string, string[]>; // Other secondary sources by id (נושאי הכלים)
   dhHighlights?: Record<number, DHHighlight>; // line_index_1 -> word highlights
   /**
    * Commentary lines (1-based) the user declared by hand as continuing the line above them —
@@ -108,7 +109,9 @@ export const TANAKH_BOOKS = [
   "בראשית", "שמות", "ויקרא", "במדבר", "דברים",
   "יהושע", "שופטים", "שמואל א", "שמואל ב", "מלכים א", "מלכים ב",
   "ישעיהו", "ירמיהו", "יחזקאל",
-  "הושע", "יואל", "עמוס", "עובדיה", "יונה", "מיכה", "נחום", "חבקוק", "צפניה", "חגי", "זכריה", "מלאכי"
+  "הושע", "יואל", "עמוס", "עובדיה", "יונה", "מיכה", "נחום", "חבקוק", "צפניה", "חגי", "זכריה", "מלאכי",
+  "תהילים", "משלי", "איוב", "שיר השירים", "רות", "איכה", "קהלת",
+  "אסתר", "דניאל", "עזרא", "נחמיה", "דברי הימים א", "דברי הימים ב"
 ];
 
 export const SHAS_TRACTATES = [

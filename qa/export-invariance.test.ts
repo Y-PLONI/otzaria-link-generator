@@ -6,13 +6,15 @@
  * the fixed parser and once against a copy with the fix reverted — and diffs the two
  * dumps. This file itself just emits a deterministic dump on stdout.
  *
- * The exported payload is defined by TopToolbar.handleExportZip: line_index_1,
- * line_index_2, heRef_2, path_2, connection_type (identical set for _links.json and
- * _links.csv).
+ * The exported payload is what TopToolbar.handleExportZip writes, built by buildLinkRecords.
  */
 
 import { runLinkingParser } from '../src/utils/parserAlgorithm';
 import type { PluginConfig } from '../src/types';
+import assert from 'node:assert/strict';
+import { syntheticBook } from './ref-fixtures';
+import { SEFARIA_REF_TABLE } from '../src/data/sefariaRefTable';
+import { buildLinkRecords } from '../src/utils/exportLinks';
 
 /**
  * Source lines deliberately seeded with tokens that `normalizeText` deletes entirely —
@@ -20,6 +22,7 @@ import type { PluginConfig } from '../src/types';
  * shift every following highlight index.
  */
 const SOURCE = [
+  '<h2>דף ב.</h2>', // gives the lines a Sefaria address, so they reach the export
   'תנו רבנן שלושה דברים נאמרו בענין זה',
   'אמר — רבי יוחנן משום רבי שמעון בן יוחאי',
   'ABC אמר רבי אלעזר משום רבי חנינא תלמידי חכמים',
@@ -51,16 +54,16 @@ const CONFIG: PluginConfig = {
   useWordWeighting: true
 };
 
+const sourceLines = SOURCE.split('\n');
+SEFARIA_REF_TABLE[CONFIG.targetBookName] = syntheticBook(sourceLines, 'Berakhot ', 'ברכות ', true,
+  Object.fromEntries(sourceLines.slice(1).map((_, index) => [index + 2, [3, index + 1]])));
+
 const parsed = runLinkingParser(COMMENTARY, SOURCE, CONFIG);
 
-/** Exactly the fields TopToolbar writes into _links.json / _links.csv. */
-const exported = parsed.links.map(link => ({
-  line_index_1: link.line_index_1,
-  line_index_2: link.line_index_2,
-  heRef_2: link.heRef_2,
-  path_2: link.path_2,
-  connection_type: link.connection_type
-}));
+/** Exactly the records TopToolbar writes into _links.json / _links.csv. */
+const exported = buildLinkRecords({ ...parsed, config: CONFIG }).records;
+
+assert.equal(exported.length, parsed.links.length, 'the export comparison must not be vacuous');
 
 /** Display-only field — this is what the fix is expected to change. */
 const highlights = parsed.links.map(link => ({

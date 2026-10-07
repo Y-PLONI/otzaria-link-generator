@@ -100,7 +100,8 @@ export default function App() {
     rashiText?: string,
     tosafotText?: string,
     rashiLinks?: any[],
-    tosafotLinks?: any[]
+    tosafotLinks?: any[],
+    secondaries?: Record<string, { text?: string; links?: any[] }>
   ) => {
     try {
       const parsed = runLinkingParser(
@@ -110,7 +111,8 @@ export default function App() {
         rashiText,
         tosafotText,
         rashiLinks,
-        tosafotLinks
+        tosafotLinks,
+        secondaries
       );
 
       const sessionId = `session_${Date.now()}`;
@@ -124,6 +126,7 @@ export default function App() {
         sourceLines: parsed.sourceLines,
         rashiLines: parsed.rashiLines,
         tosafotLines: parsed.tosafotLines,
+        secondaryLines: parsed.secondaryLines,
         dhHighlights: parsed.dhHighlights,
         lastModifiedTimestamp: Date.now()
       };

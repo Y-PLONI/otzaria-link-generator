@@ -180,7 +180,7 @@ function looksLikeHeader(line: string): boolean {
  * הכותרות אינן חסינות: בספרים האלה נפוץ שכל ס"ק נפתח בשורת כותרת ממוספרת, ואם היא תיחשב
  * כותרת, כל התוכן שלה ייפול מחוץ לסגמנט שאליו הוא שייך.
  */
-function containsSiman(line: string): boolean {
+export function containsSiman(line: string): boolean {
   return /סימן/.test(line.replace(/<[^>]*>/g, ' '));
 }
 
@@ -279,8 +279,6 @@ export interface SourceProfile {
   numberingDrivesLinking: boolean;
   /** כותרת ממוספרת (שאינה "סימן") נחשבת חלק מגוף הפירוש ולא גבול-סגמנט. */
   numberedHeadersAreContent: boolean;
-  /** יש מקורות משניים לניתוב (רש"י / תוספות). */
-  hasSecondarySources: boolean;
   /** אסימון המספור נחתך מראש השורה לפני חילוץ הד"ה. */
   stripsNumbering: boolean;
   /** מילת ההפניה להגהת הרמ"א ("בהג"ה") נחתכת אף היא — ראו matchGlossReference. */
@@ -320,7 +318,6 @@ export const DEFAULT_PROFILE: SourceProfile = {
   swdhMaxOpeningRatio: 0.008,
   numberingDrivesLinking: false,
   numberedHeadersAreContent: false,
-  hasSecondarySources: true,
   stripsNumbering: false,
   stripsGlossReference: false,
   allowsInheritance: true,
@@ -355,7 +352,6 @@ export function halachaProfile(mode: HalachaPieceMode = 'seif-katan'): SourcePro
     maxDhStartIdx: 2,
     swdhMaxOpeningRatio: 0.02,
     numberedHeadersAreContent: true,
-    hasSecondarySources: false,
     stripsNumbering: true,
     stripsGlossReference: true,
     fillsGapsBetweenEqualAnchors: true,

@@ -1,8 +1,10 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { OtzariaLink } from '../types';
 import { X, Check, Trash2, ArrowLeftRight, Search, CheckCircle2, Layers, BookOpen, Bookmark, Filter, ChevronDown } from 'lucide-react';
-import { parseDocumentSegments, findMatchingSegment } from '../utils/parserAlgorithm';
+import { parseDocumentSegments } from '../utils/parserAlgorithm';
+import { manualSegmentRanges, manualMatchingSegment } from '../utils/manualMatch';
 import { SourceProfile } from '../utils/halachaAlgorithm';
+import { normalizeForSearch } from '../utils/searchNormalize';
 
 interface EditLinkModalProps {
   commLineIndex: number; // 1-based
@@ -13,6 +15,8 @@ interface EditLinkModalProps {
   commentaryLines?: string[];
   rashiLines?: string[];
   tosafotLines?: string[];
+  /** Further secondary documents (נושאי כלים), each a tab of its own. */
+  otherSecondaries?: { id: string; label: string; lines: string[] }[];
   targetBookName?: string;
   isShas: boolean;
   /**
@@ -26,7 +30,7 @@ interface EditLinkModalProps {
    * list and every one of them takes the target chosen here; the modal itself works the same.
    */
   bulkLineCount?: number;
-  onSave: (commLineIndex: number, newSourceLineIdx: number | null, secondaryTarget?: 'rashi' | 'tosafot') => void;
+  onSave: (commLineIndex: number, newSourceLineIdx: number | null, secondaryTarget?: string) => void;
   onClose: () => void;
 }
 
@@ -39,6 +43,7 @@ export const EditLinkModal: React.FC<EditLinkModalProps> = ({
   commentaryLines = [],
   rashiLines = [],
   tosafotLines = [],
+  otherSecondaries = [],
   targetBookName = 'גמרא',
   isShas,
   profile,
@@ -53,9 +58,9 @@ export const EditLinkModal: React.FC<EditLinkModalProps> = ({
     ? (currentLink.secondary_line_index || 1)
     : (currentLink?.line_index_2 || 1);
 
-  const [activeTab, setActiveTab] = useState<'primary' | 'rashi' | 'tosafot'>(initialTab as any);
+  const [activeTab, setActiveTab] = useState<string>(initialTab);
   const [targetLine, setTargetLine] = useState<number>(initialLineIdx);
-  const [secondary, setSecondary] = useState<'none' | 'rashi' | 'tosafot'>(
+  const [secondary, setSecondary] = useState<string>(
     currentLink?.secondaryTarget || 'none'
   );
   const [searchQuery, setSearchQuery] = useState('');
@@ -65,11 +70,9 @@ export const EditLinkModal: React.FC<EditLinkModalProps> = ({
   const listRef = useRef<HTMLDivElement>(null);
 
   // 1. Find segment for current commentary line
-  const commSeg = useMemo(() => {
-    if (!commentaryLines || commentaryLines.length === 0) return null;
-    const { segments } = parseDocumentSegments(commentaryLines.join('\n'), profile);
-    return segments.find(s => commLineIndex >= s.startLine && commLineIndex <= s.endLine) || null;
-  }, [commentaryLines, commLineIndex, profile]);
+  const commSegments = useMemo(() => parseDocumentSegments(commentaryLines.join('\n'), profile).segments,
+    [commentaryLines, profile]);
+  const commSeg = commSegments.find(segment => commLineIndex >= segment.startLine && commLineIndex <= segment.endLine) ?? null;
 
   // 2. Parse segments for source books
   const primarySegments = useMemo(() => {
@@ -87,23 +90,27 @@ export const EditLinkModal: React.FC<EditLinkModalProps> = ({
     return parseDocumentSegments(tosafotLines.join('\n'), profile).segments;
   }, [tosafotLines, profile]);
 
+  const otherTab = otherSecondaries.find(o => o.id === activeTab);
+  const otherSegments = useMemo(() => {
+    if (!otherTab || otherTab.lines.length === 0) return [];
+    return parseDocumentSegments(otherTab.lines.join('\n'), profile).segments;
+  }, [otherTab, profile]);
+
   // 3. Current tab segments
   const currentTabSegments = useMemo(() => {
-    if (activeTab === 'primary') return primarySegments;
-    if (activeTab === 'rashi') return rashiSegments;
-    if (activeTab === 'tosafot') return tosafotSegments;
-    return [];
-  }, [activeTab, primarySegments, rashiSegments, tosafotSegments]);
+    const segments = activeTab === 'primary' ? primarySegments : activeTab === 'rashi'
+      ? rashiSegments : activeTab === 'tosafot' ? tosafotSegments : otherSegments;
+    return manualSegmentRanges(segments, profile);
+  }, [activeTab, primarySegments, rashiSegments, tosafotSegments, otherSegments, profile]);
 
-  // 4. Find matching segment index in active tab
+  // Use the containing siman, rather than the first matching סעיף elsewhere in the book.
   const matchingSegIndex = useMemo(() => {
-    if (!commSeg || currentTabSegments.length === 0) return -1;
-    const match = findMatchingSegment(currentTabSegments, commSeg.headerTitle);
-    return match ? currentTabSegments.indexOf(match) : -1;
-  }, [commSeg, currentTabSegments]);
+    const match = manualMatchingSegment(currentTabSegments, commSegments, commLineIndex, profile);
+    return match ? currentTabSegments.findIndex(segment => segment.startLine === match.startLine) : -1;
+  }, [commSegments, commLineIndex, currentTabSegments, profile]);
 
   // 5. Selected segment filter state
-  const [selectedSegIndex, setSelectedSegIndex] = useState<number | 'all'>('all');
+  const [selectedSegIndex, setSelectedSegIndex] = useState<number | 'all'>(matchingSegIndex >= 0 ? matchingSegIndex : 'all');
 
   // Sync selected segment whenever activeTab or matchingSegIndex changes
   useEffect(() => {
@@ -129,7 +136,7 @@ export const EditLinkModal: React.FC<EditLinkModalProps> = ({
     onClose();
   };
 
-  const handleSelectLine = (lineIdx1: number, tabType: 'primary' | 'rashi' | 'tosafot') => {
+  const handleSelectLine = (lineIdx1: number, tabType: string) => {
     setTargetLine(lineIdx1);
     setSecondary(tabType === 'primary' ? 'none' : tabType);
   };
@@ -147,10 +154,17 @@ export const EditLinkModal: React.FC<EditLinkModalProps> = ({
     }
     if (activeTab === 'rashi') return rashiLines;
     if (activeTab === 'tosafot') return tosafotLines;
-    return [];
+    return otherTab?.lines ?? [];
   };
 
   const currentTabLines = getTabLines();
+  // A query that normalizes to nothing (only nikud, say) filters nothing, like an empty one.
+  const normalizedQuery = normalizeForSearch(searchQuery).trim();
+  const isSearchActive = normalizedQuery !== '';
+  const normalizedTabLines = useMemo(
+    () => (isSearchActive ? currentTabLines.map(normalizeForSearch) : null),
+    [currentTabLines, isSearchActive]
+  );
 
   // Filter lines by selected segment & search query
   const filteredLines = useMemo(() => {
@@ -162,12 +176,11 @@ export const EditLinkModal: React.FC<EditLinkModalProps> = ({
         if (seg && (item.lineIdx1 < seg.startLine || item.lineIdx1 > seg.endLine)) {
           return false;
         }
-        if (!searchQuery.trim()) return true;
-        const q = searchQuery.toLowerCase().trim();
-        if (item.lineIdx1.toString() === q) return true;
-        return item.text.toLowerCase().includes(q);
+        if (!normalizedTabLines) return true;
+        if (item.lineIdx1.toString() === searchQuery.toLowerCase().trim()) return true;
+        return normalizedTabLines[item.lineIdx1 - 1].includes(normalizedQuery);
       });
-  }, [currentTabLines, selectedSegIndex, currentTabSegments, searchQuery]);
+  }, [currentTabLines, normalizedTabLines, normalizedQuery, selectedSegIndex, currentTabSegments, searchQuery]);
 
   // Bring the selected line into view instead of making the user hunt for it down the list.
   // `nearest` keeps a card that is already visible exactly where it is, so plain clicking
@@ -177,10 +190,11 @@ export const EditLinkModal: React.FC<EditLinkModalProps> = ({
     card?.scrollIntoView({ block: 'nearest' });
   }, [activeTab, selectedSegIndex, targetLine, filteredLines.length]);
 
-  const getTabTitle = (tab: 'primary' | 'rashi' | 'tosafot') => {
+  const getTabTitle = (tab: string) => {
     if (tab === 'primary') return targetBookName || 'גמרא / מקור ראשי';
     if (tab === 'rashi') return 'רש"י';
-    return 'תוספות';
+    if (tab === 'tosafot') return 'תוספות';
+    return otherSecondaries.find(o => o.id === tab)?.label ?? tab;
   };
 
   return (
@@ -293,6 +307,28 @@ export const EditLinkModal: React.FC<EditLinkModalProps> = ({
                   )}
                 </button>
               )}
+
+              {otherSecondaries.map(({ id, label, lines }) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => {
+                    setActiveTab(id);
+                    setSecondary(id);
+                  }}
+                  className={`flex-1 py-2 px-3 rounded-lg text-xs md:text-sm font-bold flex items-center justify-center gap-1.5 transition-all ${
+                    activeTab === id
+                      ? 'bg-teal-600 text-white shadow-2xs'
+                      : 'text-teal-800 dark:text-teal-300 hover:bg-teal-50 dark:hover:bg-teal-950/40'
+                  }`}
+                >
+                  <Layers className="w-4 h-4 shrink-0" />
+                  <span>{label}</span>
+                  <span className="bg-black/10 dark:bg-white/10 px-1.5 py-0.5 rounded-md text-[11px]">
+                    {lines.length}
+                  </span>
+                </button>
+              ))}
             </div>
 
             {/* Filter Search Bar, Section Filter & Manual Line Number Input */}
@@ -381,9 +417,7 @@ export const EditLinkModal: React.FC<EditLinkModalProps> = ({
               ) : (
                 filteredLines.map(({ text, lineIdx1 }) => {
                   const isSelected =
-                    (activeTab === 'primary' && secondary === 'none' && targetLine === lineIdx1) ||
-                    (activeTab === 'rashi' && secondary === 'rashi' && targetLine === lineIdx1) ||
-                    (activeTab === 'tosafot' && secondary === 'tosafot' && targetLine === lineIdx1);
+                    targetLine === lineIdx1 && secondary === (activeTab === 'primary' ? 'none' : activeTab);
 
                   const lineKey = `${activeTab}-${lineIdx1}`;
                   const isExpanded = expandedLines[lineKey];

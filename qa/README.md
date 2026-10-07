@@ -5,7 +5,7 @@ development-only — nothing under `qa/` is imported by the plugin build.
 
 ## Fixtures
 
-Book text is not committed (≈10MB). Extract it from the local Otzaria library:
+Book text is not committed (≈10MB). Extract it from the local Otzaria library with Python 3 and `zstandard` (both plain and compressed schemas are supported):
 
 ```bash
 node qa/extract-books.mjs            # writes qa/data/*.txt
@@ -33,6 +33,8 @@ behaviour change re-recorded with `snapshot` and reviewed.
 
 ## Unit tests
 
+`npm test` runs all standalone test scripts, including render, siman scope, content fingerprints and mirror drift regressions. Set `OTZARIA_DB` to include the read-only database sweeps; regenerate the v2 signatures for that database first.
+
 Self-contained scripts, each one exiting non-zero on the first failure. They run on synthetic
 text written inside the file itself — no fixtures, no network:
 
@@ -45,6 +47,11 @@ node --import tsx qa/front-matter.test.ts
 node --import tsx qa/source-keyword-boundary.test.ts
 node --import tsx qa/drag-candidates.test.ts
 node --import tsx qa/export-invariance.test.ts
+node --import tsx qa/sefaria-refs.test.ts           # ref_2 של הייצוא (עם מסד הספרייה ו-DICTA_LINKS_DIR — גם מול נתונים אמיתיים)
+node --import tsx qa/halacha-commentators.test.ts  # נושאי כלים: ניתוב, טבלת המראה וייצוא (עם מסד הספרייה)
+node --import tsx qa/seif-katan.test.ts            # ס"ק: טעינה כמו במסך ההכנה, סימן מפורש וגבולות הפסקאות
+node --import tsx qa/render-window.test.ts         # the edit list's render window
+node --import tsx qa/search-normalize.test.ts      # free-text search normalization
 ```
 
 The halacha category is documented in [docs/HALACHA_CATEGORY.md](../docs/HALACHA_CATEGORY.md).
@@ -95,3 +102,19 @@ node qa/readprof.mjs ./__prof
 ```
 
 Prints self and inclusive time per function.
+
+## Browser render regression
+
+The optional browser test mounts the real editor with 3,000 rows. It checks bounded rendering
+for separate targets, one large target group, a pending inheritance chain, and unlinked rows;
+Home/End reach both ends, editing still works, and the unlinked popup renders one page at a time.
+It starts and stops its own Vite server. Playwright is development tooling only:
+
+```bash
+npm install --no-save --package-lock=false playwright
+npx playwright install chromium
+node qa/browser-render.mjs
+# Or use an installed Chrome: BROWSER_CHANNEL=chrome node qa/browser-render.mjs
+```
+
+`PLAYWRIGHT_MODULE` may point to an existing Playwright module, and `QA_PORT` overrides 3019.

@@ -4,6 +4,7 @@ import {
   firstContentLineIsBaad,
   isBaadContinuationLine,
   isBareSourceLabelLine,
+  secondaryLinesOf,
   isHeaderLine
 } from './parserAlgorithm';
 import { SourceProfile, continuesByProfile } from './halachaAlgorithm';
@@ -256,6 +257,7 @@ export function cascadeInheritedContext(params: {
   sourceLines?: string[];
   rashiLines?: string[];
   tosafotLines?: string[];
+  secondaryLines?: Record<string, string[]>;
   dhHighlights?: Record<number, DHHighlight>;
   manualInherit?: ManualInheritLines;
   profile?: ChainProfile;
@@ -267,6 +269,7 @@ export function cascadeInheritedContext(params: {
     sourceLines = [],
     rashiLines = [],
     tosafotLines = [],
+    secondaryLines,
     dhHighlights = {},
     manualInherit,
     profile
@@ -281,11 +284,9 @@ export function cascadeInheritedContext(params: {
 
   // Secondary links carry the same physical line number in both line_index_2 and
   // secondary_line_index, so the parent's line_index_2 addresses whichever document it targets.
-  const targetLines = parent.secondaryTarget === 'rashi'
-    ? rashiLines
-    : parent.secondaryTarget === 'tosafot'
-      ? tosafotLines
-      : sourceLines;
+  const targetLines = parent.secondaryTarget
+    ? secondaryLinesOf({ rashiLines, tosafotLines, secondaryLines }, parent.secondaryTarget)
+    : sourceLines;
   const targetText = targetLines?.[parent.line_index_2 - 1] || '';
 
   /** The words the parser marked as this line's Dibur Hamatchil — a line that never held a
@@ -479,6 +480,7 @@ export function markLineAsInherited(params: {
   sourceLines?: string[];
   rashiLines?: string[];
   tosafotLines?: string[];
+  secondaryLines?: Record<string, string[]>;
   dhHighlights?: Record<number, DHHighlight>;
   profile?: ChainProfile;
 }): { links: OtzariaLink[]; manualInherit: Set<number> } | null {
