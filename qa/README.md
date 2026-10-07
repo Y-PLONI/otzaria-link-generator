@@ -49,6 +49,7 @@ node --import tsx qa/drag-candidates.test.ts
 node --import tsx qa/export-invariance.test.ts
 node --import tsx qa/sefaria-refs.test.ts           # ref_2 של הייצוא (עם מסד הספרייה ו-DICTA_LINKS_DIR — גם מול נתונים אמיתיים)
 node --import tsx qa/halacha-commentators.test.ts  # נושאי כלים: ניתוב, טבלת המראה וייצוא (עם מסד הספרייה)
+node --import tsx qa/seif-katan.test.ts            # ס"ק: טעינה כמו במסך ההכנה, סימן מפורש וגבולות הפסקאות
 node --import tsx qa/render-window.test.ts         # the edit list's render window
 node --import tsx qa/search-normalize.test.ts      # free-text search normalization
 ```

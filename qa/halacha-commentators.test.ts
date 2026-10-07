@@ -14,6 +14,7 @@ import { runLinkingParser, secondarySourcesFor, secondarySourcesCitedIn } from '
 import { buildLinkRecords } from '../src/utils/exportLinks';
 import { mirrorBaseLines } from '../src/utils/shasMirror';
 import { parseSeifKatanCitation, seifKatanLine, hebrewNumeral } from '../src/utils/seifKatan';
+import { hebrewToNumber } from '../src/utils/sefariaRefs';
 import { HALACHA_COMMENTATORS } from '../src/data/halachaCommentators';
 import { SEFARIA_REF_TABLE } from '../src/data/sefariaRefTable';
 import { HALACHA_MIRROR_TABLE } from '../src/data/halachaMirrorTable';
@@ -247,7 +248,11 @@ if (!fs.existsSync(DB_PATH)) {
       const rows = db.prepare('SELECT lineIndex, heRef FROM line WHERE bookId = ? ORDER BY lineIndex').all(bookId(c.title)!) as { lineIndex: number; heRef: string | null }[];
       const head = `${c.title}, `;
       rows.forEach(r => {
-        const nums = r.heRef?.startsWith(head) ? r.heRef.slice(head.length).split(',').map(x => hebrewNumeral(x.trim().replace(/[״׳]/g, ''))) : [];
+        const nums = r.heRef?.startsWith(head) ? r.heRef.slice(head.length).split(',').map(x => {
+          const letters = x.trim().replace(/["'״׳]/g, '');
+          // Named nodes such as הקדמה are not simanim, even if summing their letters gives 154.
+          return /^[א-ת]{1,4}$/.test(letters) ? hebrewToNumber(letters) : null;
+        }) : [];
         if (!nums.length || nums.some(v => !v)) return;
         if (nums.length === 2 || (nums.length === 3 && nums[2] === 1)) {
           skPairs++;
@@ -260,9 +265,10 @@ if (!fs.existsSync(DB_PATH)) {
     }
   }
   console.log(`INFO  library: ${skPairs} (סימן, ס"ק) pairs checked, ${skBad} wrong`);
-  eq('library: ס"ק N reaches the line the library numbers so', skWrong, []);
+  eq('library: ס"ק N reaches the line the library numbers so', { bad: skBad, examples: skWrong }, { bad: 0, examples: [] });
 
-  // The engine over the real ש"ך יו"ד text (letters only); lines given words keep their letter count.
+  // The engine over verified library signatures. Altering an adjacent paragraph must not
+  // make it a verified destination, even when its letter count is preserved.
   const yd = HALACHA_BOOKS[1];
   const shachTitle = HALACHA_COMMENTATORS[yd].find(c => c.id === 'shach')!.title;
   const tazTitle = HALACHA_COMMENTATORS[yd].find(c => c.id === 'taz')!.title;
@@ -283,7 +289,7 @@ if (!fs.existsSync(DB_PATH)) {
       undefined, undefined, undefined, undefined, { shach: { text: filled.join('\n') }, taz: { text: taz.join('\n') } });
     const at = (line: number) => res.links.filter(l => l.line_index_1 === line).map(l => [l.secondaryTarget ?? null, l.line_index_2, l.confidence, l.status]);
     eq('ס"ק: the line itself, certain', at(2), [['shach', target, 100, 'approved']]);
-    eq('ס"ק with a ד"ה up to two lines below it: that line', at(3), [['shach', near, 100, 'approved']]);
+    eq('ס"ק with a ד"ה in an altered adjacent paragraph: keep the cited address for review', at(3), [['shach', target, 60, 'pending']]);
     eq('ס"ק with a ד"ה not near it: the ס"ק, for review', at(4), [['shach', target, 60, 'pending']]);
     eq('a ס"ק the סימן does not have: not the ש"ך', at(5).filter(l => l[0] === 'shach'), []);
     eq('ט"ז ס"ק: linked, certain', at(6), [['taz', tazFirst, 100, 'approved']]);

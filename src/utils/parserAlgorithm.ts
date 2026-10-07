@@ -1,7 +1,7 @@
 import { OtzariaLink, PluginConfig, DHHighlight, SessionState } from '../types';
 import { expandAbbreviationsInText, DEFAULT_ABBREVIATIONS, NORMALIZED_ABBREVIATIONS_MAP, ABBR_MARK } from '../data/abbreviations';
 import { HALACHA_COMMENTATORS } from '../data/halachaCommentators';
-import { parseSeifKatanCitation, seifKatanLine, simanNumber } from './seifKatan';
+import { parseSeifKatanCitation, seifKatanLine, seifKatanLines, simanNumber } from './seifKatan';
 
 /**
  * FIX ח׳ — a resolved abbreviation keeps ONE slot of the maxDhWords cap and bridges the run,
@@ -866,6 +866,26 @@ function sourceKeywordPrefix(normalized: string, protectedKeywords?: string[]): 
   return { cleanedPrefix, lineForKeywordCheck: stripLeadingMarkers(cleanedPrefix, protectedKeywords) || cleanedPrefix || normalized };
 }
 
+/** Same citation preparation for preload and routing, preserving the DH's punctuation. */
+function halachaCitationIn(line: string, sources: SecondarySource[]) {
+  let plain = normalizeHebrewQuotes(stripContentMarkup(line)).replace(/[\u0591-\u05C7]/g, '').trim();
+  // Check before removing EACH marker: a parenthesized citation is meaningful text,
+  // whereas a parenthesized number in front of it is only numbering.
+  for (let pass = 0; pass <= 4; pass++) {
+    const citation = parseSeifKatanCitation(plain, sources);
+    if (citation) return citation;
+    if (plain.startsWith('(')) {
+      const inner = plain.slice(1).trim().replace(SOURCE_CONTEXT_STRIP_RE, '').replace(BARE_SHAM_STRIP_RE, '').trim();
+      const bracketedCitation = parseSeifKatanCitation(inner, sources);
+      if (bracketedCitation) return bracketedCitation;
+    }
+    const next = plain.replace(LEADING_BULLET_STRIP_RE, '').replace(SOURCE_CONTEXT_STRIP_RE, '').replace(BARE_SHAM_STRIP_RE, '').trim();
+    if (next === plain) break;
+    plain = next;
+  }
+  return null;
+}
+
 /**
  * A book a commentary line may cite by name instead of its base text: רש"י / תוספות on the ש"ס and
  * תנ"ך, a נושא כלים on a חלק of the שו"ע. `id` is what a link stores in `secondaryTarget`.
@@ -879,6 +899,7 @@ export interface SecondarySource {
   keywordsNorm: string[];
   /** ד"ה word cap for this book; the profile's when absent */
   maxDhWords?: number;
+  noSeifKatan?: true;
 }
 
 const secondarySourcesCache = new Map<string, SecondarySource[]>();
@@ -919,8 +940,9 @@ export function secondarySourcesCitedIn(
     // Use the engine's preparation, including halacha numbering and stacked pointer words.
     const prepared = stripHalachaLeadIn(stripContentMarkup(line), profile);
     const { lineForKeywordCheck } = sourceKeywordPrefix(normalizeText(prepared, false), protectedKeywords);
+    const citation = profile.kind === 'halacha' ? halachaCitationIn(prepared, sources) : null;
     for (const source of sources) {
-      if (startsWithSourceKeyword(lineForKeywordCheck, source.keywordsNorm)) cited.add(source);
+      if (citation?.sourceId === source.id || startsWithSourceKeyword(lineForKeywordCheck, source.keywordsNorm)) cited.add(source);
     }
   }
   return sources.filter(source => cited.has(source));
@@ -2561,6 +2583,7 @@ export function runLinkingParser(
       if (cLineIdx > commDoc.lines.length) break;
       const cLineRaw = commDoc.lines[cLineIdx - 1];
       if (!cLineRaw || isHeaderLine(cLineRaw, profile) || !cLineRaw.trim()) continue;
+      const firstContentInSegment = !segmentHadContent;
       segmentHadContent = true;
 
       /**
@@ -2573,6 +2596,7 @@ export function runLinkingParser(
       // אסימון המספור ומילת ההפניה להגהה נחתכים מהשורה לפני כל שאר הצינור, כך שהמילה הראשונה
       // שהמנוע רואה היא המילה הראשונה של הלמה — זה מה שנותן ל-maxDhStartIdx=2 את המשמעות שלו.
       const trimmedLine = stripHalachaLeadIn(cLineRaw, profile).trim();
+      const citation = profile.kind === 'halacha' ? halachaCitationIn(trimmedLine, routableSources) : null;
 
       // שורת אסימון אינה קטע פירוש: היא אינה מקבלת קישור, אינה מנתקת את שרשרת הירושה,
       // ומוסרת את תפקיד הפותח לשורה הבאה.
@@ -2584,7 +2608,11 @@ export function runLinkingParser(
       if (profile.stripsNumbering && !trimmedLine) continue;
 
       /** השורה פותחת ס"ק: היא עצמה ממוספרת, או שהיא שורת התוכן שאחרי שורת אסימון. */
-      const isSeifKatanOpener = skMode && (hasHalachaNumbering(cLineRaw) || markerAwaitsOpener);
+      // A new siman opening with a complete address is a new subject, even without a
+      // separate SK marker. It cannot inherit an address from the previous siman.
+      const citationOpensSiman = firstContentInSegment && containsSiman(commSeg.headerTitle) && citation !== null;
+      const isSeifKatanOpener = skMode && (hasHalachaNumbering(cLineRaw) || markerAwaitsOpener || citationOpensSiman);
+      if (skMode && citationOpensSiman) { previousLink = null; previousInheritDepth = 0; }
       markerAwaitsOpener = false;
 
       /**
@@ -2680,7 +2708,6 @@ export function runLinkingParser(
       let explicitSecondaryTarget = false;
 
       // On the שו"ע a נושא כלים is cited by ס"ק number ("ש"ך ס"ק כ'"): that names the line itself.
-      const citation = profile.kind === 'halacha' ? parseSeifKatanCitation(trimmedLine, routableSources) : null;
       const citedDoc = citation ? secondaryDocs.get(citation.sourceId) : undefined;
       const skSiman = citation ? citation.siman ?? simanNumber(segmentSimanTitle) : null;
       const skLine = citation && citedDoc && skSiman
@@ -2688,8 +2715,8 @@ export function runLinkingParser(
         : null;
       // A ס"ק the book does not have: the line reads as it would without ס"ק routing.
       const skCitation = skLine ? citation : null;
-      const namedSource = skCitation
-        ? routableSources.find(source => source.id === skCitation.sourceId)
+      const namedSource = citation
+        ? routableSources.find(source => source.id === citation.sourceId)
         : routableSources.find(source => startsWithSourceKeyword(lineForKeywordCheck, source.keywordsNorm));
       if (namedSource) {
         targetSecondary = namedSource.id;
@@ -2755,7 +2782,7 @@ export function runLinkingParser(
 
       // Extract DH search text using stripped line if secondary prefix present
       let lineForDh = skCitation ? skCitation.dh
-        : citation?.dh && namedSource ? citation.dh : stripSecondaryPrefixWith(trimmedLine, secondaryPrefixRe, protectedSourceKeywords);
+        : citation && namedSource ? citation.dh : stripSecondaryPrefixWith(trimmedLine, secondaryPrefixRe, protectedSourceKeywords);
       if (DEBUG) console.log(`  🔍 lineForDh='${lineForDh}' (after stripSecondaryPrefix)`);
       // In הלכה a name like ט"ז or מ"ב may be a number of the שו"ע itself: when routing to the
       // נושא כלים finds nothing, the line is read exactly as it would be without that book.
@@ -2824,17 +2851,23 @@ export function runLinkingParser(
       // Search in secondary source if routed (unless it's 'בא"ד', in which case we don't search, we inherit)
       // In הלכה a נושא כלים is searched only inside the סימן cited, never across the whole book.
       const secondarySearchable = secondary && targetSecondary === secondary.source.id && (secondarySeg || !routedToCommentatorOnly);
-      // A ד"ה given with the ס"ק must be on that line or within two of it; otherwise the ס"ק stands, unconfirmed.
+      // A DH may select only a verified paragraph of the cited SK, never a physical neighbour.
       let seifKatanUnconfirmed = false;
       if (!shouldInheritLine && skLine && secondary) {
         matchedSecondaryLineNum = skLine;
         if (skCitation!.dh) {
-          const searchNear = (from: number, to: number) => searchLineInDoc(
-            secondary.doc.lines, Math.max(1, from), Math.min(secondary.doc.lines.length, to), cleanDh, lineForDhExtraction,
+          const searchParagraph = (line: number) => searchLineInDoc(
+            secondary.doc.lines, line, line, cleanDh, lineForDhExtraction,
             isExplicitDelimiter, secondary.idf, null, false, secondary.cache, maxDhWordsForTarget, 0.65
           );
-          const onLine = searchNear(skLine, skLine);
-          const found = onLine.lineNum ? onLine : searchNear(skLine - 2, skLine + 2);
+          let found = searchParagraph(skLine);
+          if (!found.lineNum) {
+            for (const line of seifKatanLines(secondary.source.title, secondary.doc.lines, skSiman!, skCitation!.seifKatan)) {
+              if (line === skLine) continue;
+              const candidate = searchParagraph(line);
+              if (candidate.lineNum && (!found.lineNum || candidate.matchedCount > found.matchedCount)) found = candidate;
+            }
+          }
           if (found.lineNum) {
             secMatchRes = found;
             matchedSecondaryLineNum = found.lineNum;
@@ -3169,7 +3202,7 @@ export function runLinkingParser(
         }
         
         const headerTitle = isSecondaryLink
-          ? secondarySegOf(targetSecondary!)?.headerTitle || config.targetBookName
+          ? secondarySeg?.headerTitle || config.targetBookName
           : srcSeg ? srcSeg.headerTitle : config.targetBookName;
 
         // A line that took its target wholesale from the previous link points at a line in
@@ -3346,8 +3379,12 @@ export function runLinkingParser(
           : (secMatchRes.matchedWordCount > 0 ? secMatchRes.matchedWordCount : Math.min(4, wordsInLine.length));
       }
 
+      const citationDhIndex = citation?.dh && targetSecondary === citation.sourceId
+        ? normalizeHebrewQuotes(stripContentMarkup(cLineRaw)).replace(/[\u0591-\u05C7]/g, '')
+          .split(/\s+/).filter(Boolean).findIndex(word => /^ו?ב?ד"ה[,:.]?$/.test(word))
+        : -1;
       dhHighlights[cLineIdx] = {
-        wordStart: dhWordOffset,
+        wordStart: citationDhIndex >= 0 ? citationDhIndex + 1 : dhWordOffset,
         wordCount: Math.max(1, Math.min(dhWordCount, wordsInLine.length))
       };
     }
