@@ -8,6 +8,8 @@ export interface HalachaCommentator {
   label: string;
   title: string;
   keywords: string[];
+  /** ממוספר לפי סעיף ולא לפי ס"ק (ביאור הלכה): אין לו ציטוט לפי מספר ס"ק */
+  noSeifKatan?: true;
 }
 
 const withPrefix = (...forms: string[]) => forms.flatMap(f => [f, `ב${f}`]);
@@ -34,7 +36,7 @@ export const HALACHA_COMMENTATORS: Record<string, HalachaCommentator[]> = {
     baerHeitev('באר היטב אורח חיים'),
     // בלי השם המלא: "משנה" שבראש השורה נחתכת כמילת הקשר (SOURCE_CONTEXT_STRIP_RE)
     { id: 'mishna_berura', label: 'משנה ברורה', title: 'משנה ברורה', keywords: withPrefix('מ"ב', 'משנ"ב') },
-    { id: 'biur_halacha', label: 'ביאור הלכה', title: 'ביאור הלכה', keywords: withPrefix('בה"ל', 'ביאור הלכה') }
+    { id: 'biur_halacha', label: 'ביאור הלכה', title: 'ביאור הלכה', keywords: withPrefix('בה"ל', 'ביאור הלכה'), noSeifKatan: true }
   ],
   'שולחן ערוך, יורה דעה': [
     shach('יורה דעה'),

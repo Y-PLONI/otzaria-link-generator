@@ -117,19 +117,19 @@ for (const part of HALACHA_BOOKS) {
   ]);
   eq('not a ס"ק citation', ['ט"ז שנה ראשונה', 'ש"ך ד"ה אבן', 'ש"ך ס"ק אב', 'ס"ק כ כתב'].map(cite), [null, null, null, null]);
 
-  const shachText = ['<h1>x</h1>', '<h2>סימן א</h2>', 'שורה ראשונה', '<h2>סימן ב</h2>', '<h3>סעיף א</h3>', 'פתיחה כללית', 'שורה שנייה כאן',
-    '<h3>סעיף ב</h3>', `${PHRASES[1]} ועוד`, 'שורה רביעית', `${PHRASES[2]} כאן`].join('\n');
-  const sa = [SA_TEXT, '<h2>סימן ב</h2>', 'שורה שלישית בסימן השני כאן'].join('\n');
-  const comm = ['<h2>סימן ב</h2>', `(א) ש"ך ס"ק ג' כתב דבר`, `(ב) ש"ך סק"ב ד"ה ${PHRASES[1]}. ביאור`,
-    `(ג) ש"ך ס"ק ד ד"ה מילים שאינן בשום מקום. ביאור`, `(ד) ש"ך ס"ק ט כתב`, `(ה) ש"ך סי' א ס"ק א כתב`].join('\n');
-  const res = runLinkingParser(comm, sa, { ...config(yd), halachaMultiLinePieces: true, halachaSeifKatan: true },
-    undefined, undefined, undefined, undefined, { shach: { text: shachText } });
-  const at = (line: number) => res.links.filter(l => l.line_index_1 === line).map(l => [l.secondaryTarget ?? null, l.line_index_2, l.confidence, l.status]);
-  eq('ס"ק N is the N-th line of the סימן, past its סעיף headers, and is certain', at(2), [['shach', 9, 100, 'approved']]);
-  eq('a ד"ה found two lines from its ס"ק is taken', at(3), [['shach', 9, 100, 'approved']]);
-  eq('a ד"ה not found near its ס"ק keeps the ס"ק, for review', at(4), [['shach', 10, 60, 'pending']]);
-  eq('a ס"ק the סימן does not have is not linked to the ש"ך', at(5).filter(l => l[0] === 'shach'), []);
-  eq('an explicit סימן wins over the enclosing one', at(6), [['shach', 3, 100, 'approved']]);
+  eq('a סימן whose number reads as a name is not a citation of that book', [
+    `סימן ט"ז ס"ק ג' כתב`, `סימן ב"ש ס"ק ג' כתב`
+  ].map(cite), [null, null]);
+  const ocSources = secondarySourcesFor({ sourceCategory: 'halacha', targetBookName: HALACHA_BOOKS[0] });
+  eq('... nor in או"ח', [`סימן מ"א ס"ק ג' כתב`, `סימן מ"ב ס"ק ג' כתב`].map(l => parseSeifKatanCitation(l, ocSources)), [null, null]);
+  eq('words that are not numbers', ['שם', 'זה', 'הנ"ל', 'כן', 'לא', 'ט"ז', 'כ\'', 'לא\'', 'קכז'].map(hebrewNumeral),
+    [null, null, null, null, null, 16, 20, 31, 127]);
+  eq('only ח"מ, which may be חושן משפט, asks for review', [`ט"ז ס"ק ג'`, `ש"ך ס"ק ג'`, `בט"ז סק"ג`]
+    .map(l => parseSeifKatanCitation(l, ydSources)?.ambiguous), [false, false, false]);
+  const ehSources = secondarySourcesFor({ sourceCategory: 'halacha', targetBookName: HALACHA_BOOKS[2] });
+  eq('... in אבן העזר', [`ח"מ ס"ק ב'`, `ב"ש ס"ק ב'`].map(l => parseSeifKatanCitation(l, ehSources)?.ambiguous), [true, false]);
+  eq('ביאור הלכה, numbered by סעיף, is never cited by ס"ק',
+    parseSeifKatanCitation(`בה"ל ס"ק ג'`, ocSources), null);
 }
 
 // ── 3. against the library: tables, refs and the exported mirror row ─────────────────────────
@@ -211,10 +211,9 @@ if (!fs.existsSync(DB_PATH)) {
   eq('library: every commentator is in the library, the ref table and the mirror table', missing.map(ascii), []);
   eq('library: mirror rows and exported records agree with the library', wrong, []);
 
-  // ס"ק N of every book against its heRef: [סימן, ס"ק] in the two-level books; in the ש"ך and the
-  // קצות, numbered by סעיף in the library, at least the סימן of the line reached.
+  // ס"ק N of every book against its heRef: [סימן, ס"ק], or the first paragraph of [סימן, ס"ק, פסקה].
   const skWrong: string[] = [];
-  let skPairs = 0;
+  let skPairs = 0, skBad = 0;
   for (const part of HALACHA_BOOKS) {
     for (const c of HALACHA_COMMENTATORS[part]) {
       if (c.id === 'biur_halacha') continue;
@@ -222,26 +221,49 @@ if (!fs.existsSync(DB_PATH)) {
       if (!lines) continue;
       const rows = db.prepare('SELECT lineIndex, heRef FROM line WHERE bookId = ? ORDER BY lineIndex').all(bookId(c.title)!) as { lineIndex: number; heRef: string | null }[];
       const head = `${c.title}, `;
-      let simanSeen = 0, n = 0;
       rows.forEach(r => {
         const nums = r.heRef?.startsWith(head) ? r.heRef.slice(head.length).split(',').map(x => hebrewNumeral(x.trim().replace(/[״׳]/g, ''))) : [];
         if (!nums.length || nums.some(v => !v)) return;
-        if (nums.length === 2) {
+        if (nums.length === 2 || (nums.length === 3 && nums[2] === 1)) {
           skPairs++;
-          if (seifKatanLine(c.title, lines, nums[0]!, nums[1]!) !== r.lineIndex + 1 && skWrong.length < 5) skWrong.push(`${ascii(c.title)} ${nums}`);
-        } else if (nums.length === 3) {
-          n = nums[0] === simanSeen ? n + 1 : 1;
-          simanSeen = nums[0]!;
-          skPairs++;
-          const line = seifKatanLine(c.title, lines, nums[0]!, n);
-          const at = line ? rows[line - 1]?.heRef?.slice(head.length).split(',').map(x => hebrewNumeral(x.trim())) : null;
-          if ((!at || at[0] !== nums[0]) && skWrong.length < 5) skWrong.push(`${ascii(c.title)} ${nums} -> ${line}`);
+          if (seifKatanLine(c.title, lines, nums[0]!, nums[1]!) !== r.lineIndex + 1) {
+            skBad++;
+            if (skWrong.length < 5) skWrong.push(`${ascii(c.title)} ${nums}`);
+          }
         }
       });
     }
   }
-  console.log(`INFO  library: ${skPairs} (סימן, ס"ק) pairs checked`);
+  console.log(`INFO  library: ${skPairs} (סימן, ס"ק) pairs checked, ${skBad} wrong`);
   eq('library: ס"ק N reaches the line the library numbers so', skWrong, []);
+
+  // The engine over the real ש"ך יו"ד text (letters only); lines given words keep their letter count.
+  const yd = HALACHA_BOOKS[1];
+  const shachTitle = HALACHA_COMMENTATORS[yd].find(c => c.id === 'shach')!.title;
+  const tazTitle = HALACHA_COMMENTATORS[yd].find(c => c.id === 'taz')!.title;
+  const shach = textOf(shachTitle), taz = textOf(tazTitle), sa = textOf(yd);
+  if (shach && taz && sa) {
+    const target = seifKatanLine(shachTitle, shach, 127, 16)!;
+    eq('יו"ד קכ"ז: ש"ך ס"ק ט"ז', target, 5200);
+    const lettersOf = (line: string) => (line.match(/[\u05d0-\u05ea]/g) ?? []).length;
+    const phrase = PHRASES[3];
+    const filled = shach.slice();
+    const near = [target + 2, target + 1].find(l => !shach[l - 1].startsWith('<h') && lettersOf(shach[l - 1]) >= lettersOf(phrase))!;
+    filled[near - 1] = `${phrase} ${'א'.repeat(lettersOf(shach[near - 1]) - lettersOf(phrase))}`;
+    const tazFirst = seifKatanLine(tazTitle, taz, 127, 3)!;
+    const comm = ['<h2>סימן קכז</h2>', `(א) ש"ך ס"ק ט"ז כתב`, `(ב) ש"ך ס"ק ט"ז ד"ה ${phrase}. ביאור`,
+      `(ג) ש"ך ס"ק ט"ז ד"ה מילים שאינן בשום מקום. ביאור`, `(ד) ש"ך ס"ק ת"ק כתב`, `(ה) ט"ז ס"ק ג' כתב`,
+      '<h2>סימן קכח</h2>', `(א) ש"ך סי' קכ"ז ס"ק ט"ז כתב`].join('\n');
+    const res = runLinkingParser(comm, sa.join('\n'), { ...config(yd), halachaMultiLinePieces: true, halachaSeifKatan: true },
+      undefined, undefined, undefined, undefined, { shach: { text: filled.join('\n') }, taz: { text: taz.join('\n') } });
+    const at = (line: number) => res.links.filter(l => l.line_index_1 === line).map(l => [l.secondaryTarget ?? null, l.line_index_2, l.confidence, l.status]);
+    eq('ס"ק: the line itself, certain', at(2), [['shach', target, 100, 'approved']]);
+    eq('ס"ק with a ד"ה up to two lines below it: that line', at(3), [['shach', near, 100, 'approved']]);
+    eq('ס"ק with a ד"ה not near it: the ס"ק, for review', at(4), [['shach', target, 60, 'pending']]);
+    eq('a ס"ק the סימן does not have: not the ש"ך', at(5).filter(l => l[0] === 'shach'), []);
+    eq('ט"ז ס"ק: linked, certain', at(6), [['taz', tazFirst, 100, 'approved']]);
+    eq('an explicit סימן wins over the enclosing one', at(8), [['shach', target, 100, 'approved']]);
+  }
 }
 
 if (failures) {

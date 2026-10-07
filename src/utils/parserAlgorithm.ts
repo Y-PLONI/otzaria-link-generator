@@ -2681,7 +2681,14 @@ export function runLinkingParser(
       let explicitSecondaryTarget = false;
 
       // On the שו"ע a נושא כלים is cited by ס"ק number ("ש"ך ס"ק כ'"): that names the line itself.
-      const skCitation = profile.kind === 'halacha' ? parseSeifKatanCitation(trimmedLine, routableSources) : null;
+      const citation = profile.kind === 'halacha' ? parseSeifKatanCitation(trimmedLine, routableSources) : null;
+      const citedDoc = citation ? secondaryDocs.get(citation.sourceId) : undefined;
+      const skSiman = citation ? citation.siman ?? simanNumber(segmentSimanTitle) : null;
+      const skLine = citation && citedDoc && skSiman
+        ? seifKatanLine(citedDoc.source.title, citedDoc.doc.lines, skSiman, citation.seifKatan)
+        : null;
+      // A ס"ק the book does not have: the line reads as it would without ס"ק routing.
+      const skCitation = skLine ? citation : null;
       const namedSource = skCitation
         ? routableSources.find(source => source.id === skCitation.sourceId)
         : routableSources.find(source => startsWithSourceKeyword(lineForKeywordCheck, source.keywordsNorm));
@@ -2748,7 +2755,8 @@ export function runLinkingParser(
       let isInherited = false;
 
       // Extract DH search text using stripped line if secondary prefix present
-      let lineForDh = skCitation ? skCitation.dh : stripSecondaryPrefixWith(trimmedLine, secondaryPrefixRe);
+      let lineForDh = skCitation ? skCitation.dh
+        : citation?.dh && namedSource ? citation.dh : stripSecondaryPrefixWith(trimmedLine, secondaryPrefixRe);
       if (DEBUG) console.log(`  🔍 lineForDh='${lineForDh}' (after stripSecondaryPrefix)`);
       // In הלכה a name like ט"ז or מ"ב may be a number of the שו"ע itself: when routing to the
       // נושא כלים finds nothing, the line is read exactly as it would be without that book.
@@ -2776,7 +2784,13 @@ export function runLinkingParser(
       // Tosafot ד"ה is capped to 7 words; every other source (Rashi, Gemara, Mishna, etc.) keeps
       // the profile's cap — 12 for ש"ס/תנ"ך as before, 5 for ספרי הלכה.
       const secondary = targetSecondary ? secondaryDocs.get(targetSecondary) : undefined;
-      const secondarySeg = targetSecondary ? secondarySegOf(targetSecondary) : null;
+      // A סימן named in the citation is where the book is searched, not the commentary's own.
+      const citedSimanTitle = citation?.siman && secondary && targetSecondary === citation.sourceId
+        ? secondary.doc.segments.find(seg => simanNumber(seg.headerTitle) === citation.siman)?.headerTitle ?? ''
+        : undefined;
+      const secondarySeg = !targetSecondary ? null
+        : citedSimanTitle === undefined ? secondarySegOf(targetSecondary)
+          : citedSimanTitle ? findSecondarySegment(secondary!.doc.segments, citedSimanTitle, profile, citedSimanTitle) : null;
       let maxDhWordsForTarget = sources.find(source => source.id === targetSecondary)?.maxDhWords ?? profile.maxDhWords;
       let { dhText, cleanDh, isExplicitDelimiter } = extractDiburHamatchil(lineForDhExtraction, config.diburHamatchilDelimiter, maxDhWordsForTarget, profile);
       if (routedToCommentatorOnly && !lineForDh.trim() && !skCitation) readAsUnrouted();
@@ -2811,10 +2825,6 @@ export function runLinkingParser(
       // Search in secondary source if routed (unless it's 'בא"ד', in which case we don't search, we inherit)
       // In הלכה a נושא כלים is searched only inside the סימן cited, never across the whole book.
       const secondarySearchable = secondary && targetSecondary === secondary.source.id && (secondarySeg || !routedToCommentatorOnly);
-      const skSiman = skCitation ? skCitation.siman ?? simanNumber(segmentSimanTitle) : null;
-      const skLine = skCitation && secondary && skSiman
-        ? seifKatanLine(secondary.source.title, secondary.doc.lines, skSiman, skCitation.seifKatan)
-        : null;
       // A ד"ה given with the ס"ק must be on that line or within two of it; otherwise the ס"ק stands, unconfirmed.
       let seifKatanUnconfirmed = false;
       if (!shouldInheritLine && skLine && secondary) {
@@ -2834,7 +2844,7 @@ export function runLinkingParser(
           }
         }
       }
-      if (!shouldInheritLine && secondarySearchable && !skLine && !(skCitation && !skCitation.dh)) {
+      if (!shouldInheritLine && secondarySearchable && !skLine) {
         const { doc: secDoc, idf: secIdf, cache: secCache, source: secSource } = secondary;
         const secStart = secondarySeg ? secondarySeg.startLine : 1;
         const secEnd = secondarySeg ? secondarySeg.endLine : secDoc.lines.length;
@@ -3207,7 +3217,7 @@ export function runLinkingParser(
           : (srcMatchRes.lineNum ? srcMatchRes : secMatchRes);
 
         const bySeifKatan = skLine !== null && matchedSecondaryLineNum !== null && !isInherited;
-        const confidence = bySeifKatan ? (seifKatanUnconfirmed ? 60 : 100) : calculateLinkConfidence({
+        const confidence = bySeifKatan ? (seifKatanUnconfirmed || skCitation!.ambiguous ? 60 : 100) : calculateLinkConfidence({
           isInherited: Boolean(isInherited),
           inheritDepth: previousInheritDepth + 1,
           inheritedFrom: previousLink?.confidence,
