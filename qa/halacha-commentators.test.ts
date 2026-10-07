@@ -125,7 +125,7 @@ for (const part of HALACHA_BOOKS) {
   const ocSources = secondarySourcesFor({ sourceCategory: 'halacha', targetBookName: HALACHA_BOOKS[0] });
   eq('... nor in או"ח', [`סימן מ"א ס"ק ג' כתב`, `סימן מ"ב ס"ק ג' כתב`].map(l => parseSeifKatanCitation(l, ocSources)), [null, null]);
   eq('words that are not numbers', ['שם', 'זה', 'הנ"ל', 'כן', 'לא', 'ט"ז', 'כ\'', 'לא\'', 'קכז'].map(hebrewNumeral),
-    [null, null, null, null, null, 16, 20, 31, 127]);
+    [null, null, null, null, 31, 16, 20, 31, 127]);
   eq('only ח"מ, which may be חושן משפט, asks for review', [`ט"ז ס"ק ג'`, `ש"ך ס"ק ג'`, `בט"ז סק"ג`]
     .map(l => parseSeifKatanCitation(l, ydSources)?.ambiguous), [false, false, false]);
   const ehSources = secondarySourcesFor({ sourceCategory: 'halacha', targetBookName: HALACHA_BOOKS[2] });

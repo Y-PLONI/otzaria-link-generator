@@ -35,11 +35,15 @@ test('a conjunctive DH marker is not swallowed as another SK number', () => {
   assert.equal(parseSeifKatanCitation('ש"ך ס"ק ג\' וד"ה אבן גדולה', sources)?.dh, 'אבן גדולה');
   assert.equal(parseSeifKatanCitation('ש"ך ס"ק ג\' וד\' ובד"ה אבן גדולה', sources)?.dh, 'אבן גדולה');
 });
-test('header numbers can look like words; citation words still cannot', () => {
+test('numbers that look like words are read as numbers; non-canonical words are not', () => {
   assert.equal(simanNumber('סימן לא'), 31);
   assert.equal(simanNumber('סימן כה'), 25);
   assert.equal(simanNumber('סימן ל״א'), 31);
-  assert.equal(hebrewNumeral('לא'), null);
+  for (const [word, value] of [['לא', 31], ['כה', 25], ['לו', 36]] as const) assert.equal(hebrewNumeral(word), value);
+  for (const word of ['זה', 'זו', 'בו', 'בה', 'בא', 'כי', 'גב', 'יה']) assert.equal(hebrewNumeral(word), null);
+  const sources = [{ id: 'shach', keywords: ['ש"ך'] }];
+  for (const [sk, value] of [['כה', 25], ['לא', 31], ['לו', 36]] as const)
+    assert.equal(parseSeifKatanCitation(`ש"ך ס"ק ${sk} כתב`, sources)?.seifKatan, value);
   for (const value of ['בטז', 'יטו', 'טטו']) assert.equal(hebrewNumeral(value), null);
 });
 const phrase = 'אבן גדולה מונחת בפתח הבית';

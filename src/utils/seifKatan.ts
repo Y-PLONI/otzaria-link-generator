@@ -29,15 +29,28 @@ const VALUES: Record<string, number> = {
 
 /** ערך של מספר עברי תקין (אותיות יורדות, טו/טז), או null למילה שאינה מספר. */
 export function hebrewNumeral(text: string): number | null {
-  return parseNumeral(text, false);
+  const letters = text.replace(/[״“”׳‘’'"]/g, '');
+  const value = parseNumeral(text);
+  if (value === null) return null;
+  // מתחת למאה רק הכתיב התקני: כה, לא, לו מספרים; זה, בו, כי לא.
+  return value >= 100 || letters === canonicalNumeral(value) ? value : null;
 }
 
-function parseNumeral(text: string, allowBareWords: boolean): number | null {
+function canonicalNumeral(value: number): string {
+  const tens = value % 100 === 15 ? 'טו' : value % 100 === 16 ? 'טז' : '';
+  let rest = tens ? value - (value % 100) : value;
+  let out = '';
+  for (const [ch, v] of DESCENDING) {
+    while (rest >= v) { out += ch; rest -= v; }
+  }
+  return out + tens;
+}
+
+function parseNumeral(text: string): number | null {
   text = text.replace(/[״“”]/g, '"').replace(/[׳‘’]/g, "'");
   let letters = text.replace(/['"]/g, '');
   if (!letters || letters.length > 4 || /[ךםןףץ]/.test(letters)) return null;
   // מילה רגילה שצורתה צורת מספר נקראת מספר רק עם גרש או גרשיים
-  if (!allowBareWords && letters === text && COMMON_WORDS.has(letters)) return null;
   let tail = 0;
   if (/ט[וז]$/.test(letters)) { tail = letters.endsWith('ו') ? 15 : 16; letters = letters.slice(0, -2); }
   let total = tail;
@@ -53,7 +66,9 @@ function parseNumeral(text: string, allowBareWords: boolean): number | null {
   return total || null;
 }
 
-const COMMON_WORDS = new Set(['זה', 'זו', 'זהו', 'בו', 'בה', 'בא', 'לא', 'כי', 'כה', 'גב']);
+const DESCENDING = Object.entries(VALUES)
+  .filter(([ch]) => !/[ךםןףץ]/.test(ch))
+  .sort((a, b) => b[1] - a[1]);
 
 const NUM = `([\\u05d0-\\u05ea]{1,4}(?:["'][\\u05d0-\\u05ea]?)?)`;
 const END = `(?![\\u05d0-\\u05ea"'])`;
@@ -120,7 +135,7 @@ const AMBIGUOUS_NAMES = new Set(['ח"מ']);
 /** מספר הסימן שבכותרת ("סימן קיט"), או null. */
 export function simanNumber(headerTitle: string | undefined): number | null {
   const m = headerTitle?.match(/סימן\s+([א-ת"'״׳]+)/);
-  return m ? parseNumeral(m[1], true) : null;
+  return m ? parseNumeral(m[1]) : null;
 }
 
 type SkEntry = { first?: number; lines: number[] };
